@@ -177,7 +177,9 @@ export function VesselState({ state }) {
           <Rows>
             {hull.relays.map((r) => (
               <Row key={`r${r.index}`} label={r.name}>
-                <span className={r.closed ? '' : 'dim-value'}>{r.text}</span>
+                <span className={r.closed ? '' : 'dim-value'} title={r.description}>
+                  {r.text}
+                </span>
               </Row>
             ))}
             {hull.escs.map((e) => (
@@ -196,10 +198,14 @@ export function VesselState({ state }) {
               </Row>
             ))}
           </Rows>
+          {/* The relay is named because its function is confirmed in firmware
+              source (GPIO21, ESC power). The ESC codes are not, and the two
+              are described differently on purpose — a panel that hedges about
+              everything teaches an operator to discount all of it. */}
           <p className="hint" style={{ marginBottom: 0 }}>
-            Which load each relay drives is not confirmed here — see
-            docs/open_questions.md Q7. The states are real; the names are not
-            claimed.
+            The relay cuts ESC power — open while disarmed is correct. ESC status
+            codes beyond 0 are hull-specific and not interpreted here; see
+            docs/open_questions.md Q7.
           </p>
         </details>
       )}

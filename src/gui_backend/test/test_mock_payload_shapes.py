@@ -191,3 +191,52 @@ def test_the_mock_agrees_with_python_on_who_is_blocked():
     for (armed, rc_high, latched), got in zip(cases, js):
         want = arming_block_reason(armed, rc_arm_high=rc_high, estop_latched=latched)
         assert got == want, f"armed={armed} rc={rc_high} latched={latched}"
+
+
+def test_the_mock_and_the_simulator_agree_there_is_one_relay():
+    """Both ends of the `0/4 relays closed` bug.
+
+    The panel rendered whatever length of array arrived, and both simulated
+    sources sent four. The real path never did — `adapters.py` builds
+    `[relay_closed]` from the single `relay=` field — so this was a lie that
+    existed only where the GUI gets reviewed, about the one component whose
+    job is cutting propulsion.
+
+    Pinned at both ends, because correcting one and not the other would leave
+    mock mode and sim mode disagreeing about the e-stop path.
+    """
+    from asket_sim.core.pico import PicoConfig
+
+    assert PicoConfig().num_relays == 1
+
+    script = textwrap.dedent(
+        f"""
+        const base = '{GUI}/src/lib/mock';
+        const {{ MockWorld }} = await import(base + '/world.js');
+        const P = await import(base + '/payloads.js');
+        const world = new MockWorld();
+        for (let i = 0; i < 100; i += 1) world.step(0.1);
+        const pico = P.picoPayload(world, 'full');
+        const hull = await import(base + '/../hull.js');
+        console.log(JSON.stringify({{
+          relays: pico.relay_states.length,
+          summary: hull.hullSummary(pico).summary,
+          name: hull.decodeRelays(pico.relay_states)[0].name,
+          described: Boolean(hull.decodeRelays(pico.relay_states)[0].description),
+        }}));
+        """
+    )
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    got = json.loads(out)
+
+    assert got["relays"] == 1
+    # Named, because unlike the hull wiring its function is confirmed in
+    # firmware source. An unnamed safety component is one nobody checks.
+    assert got["name"] == "ESC power"
+    assert got["described"], "the one relay should say what it does"
+    # And the summary says what it is rather than counting to one.
+    assert "relays closed" not in got["summary"], got["summary"]
+    assert "ESC power" in got["summary"], got["summary"]

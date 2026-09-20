@@ -55,7 +55,16 @@ class PicoConfig:
     #: Probability a mode request is simply lost, so the GUI's timeout path is
     #: exercised rather than assumed.
     request_loss_probability: float = 0.0
-    num_relays: int = 4
+    #: **One.** There is one relay on this hull — ``ESTOP_RELAY_PIN`` on
+    #: GPIO21, cutting ESC power — and the firmware has never had more.
+    #:
+    #: This was 4, a placeholder nobody revisited, and the GUI faithfully
+    #: rendered whatever length of array arrived: the panel read
+    #: ``0/4 relays closed``, which is a statement about the e-stop path and
+    #: it was false. The real path was never wrong — ``adapters.py`` builds
+    #: ``[relay_closed]`` from the single ``relay=`` field — so the lie lived
+    #: only in simulation, which is exactly where this GUI gets reviewed.
+    num_relays: int = 1
     num_escs: int = 2
 
 
