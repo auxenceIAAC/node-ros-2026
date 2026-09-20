@@ -149,7 +149,10 @@ export function picoPayload(world, detail) {
   if (detail === 'reduced') return out;
 
   Object.assign(out, {
-    relay_states: [world.armed, world.armed, world.armed, world.armed],
+    // One relay, matching the firmware and asket_sim. This used to be four,
+    // which rendered as `0/4 relays closed` — a false statement about the
+    // e-stop path, in the mode the GUI gets reviewed in.
+    relay_states: [world.armed],
     esc_status: [world.armed ? 0 : 1, world.armed ? 0 : 1],
     hardware_killswitch_engaged: false,
     rc_channel7_raw: world.rcChannel7,

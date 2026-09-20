@@ -89,6 +89,29 @@ ARM_THRESHOLD = 1000
 #: Mirrors ``HEARTBEAT_TIMEOUT_MS`` in the firmware.
 HEARTBEAT_TIMEOUT_S = 0.6
 
+#: After closing the relay, the firmware holds both thrusters at neutral for
+#: this long while the ESCs boot. Mirrors ``ESC_ARM_DELAY_MS``.
+#:
+#: Mirrored so that software does not read a vessel correctly waiting out its
+#: arm window as a vessel ignoring its throttle.
+ESC_ARM_DELAY_MS = 2000
+
+#: Mirrors ``ESTOP_FEEDBACK_ENABLED`` in the firmware, which is **0**.
+#:
+#: At 0 the firmware's ``check_power_feedback()`` compiles to nothing, so
+#: **nothing confirms that ESC power actually dropped when the relay was
+#: commanded open.** Commanding a relay and observing the rail collapse are two
+#: different claims, and only the first is being made.
+#:
+#: The pre-flight ``pico.estop_feedback`` check WARNs on every run while this
+#: is ``False``. Set it to ``True`` in the same change that sets the firmware
+#: flag to 1 — the cross-check test fails if the two disagree.
+#:
+#: This lives here rather than in ``pico_state`` because it is a statement
+#: about firmware *behaviour*, not about the wire format, and because
+#: ``system_test`` needs it and must not import ``gui_backend``.
+ESTOP_FEEDBACK_ENABLED = False
+
 
 # -- why autonomy is not engaged --------------------------------------------
 

@@ -55,7 +55,7 @@ the Jetson (§5.1).
 | | State |
 |---|---|
 | Merge, both histories intact | **verified** — 150 commits, both parents reachable from `9ff9a15` |
-| GUI Python test suite (no ROS) | **verified** — 562 passed, 1 skipped |
+| GUI Python test suite (no ROS) | **verified** — 572 passed, 1 skipped |
 | Firmware arbitration vs. the Python mirror | **verified** — 448 cells, cell for cell, against the compiled sketch (§14) |
 | Adapter and STATE-parser unit tests | **verified** — rewritten against the real v4 format |
 | Serial path end to end, no hardware | **verified** — real bytes on a pty, parsed by the real parser (§10) |
@@ -228,7 +228,8 @@ them against `parse_state_line`, and set `FORMAT_VERIFIED = True`.
 | Battery capacity and hotel load (Q5) | `src/gui_backend/config/topics.yaml` | 1200 Wh / 85 W assumed. |
 | EKF heading accuracy | `src/asket_common/asket_common/heading.py` | 3.0° nominal. The EKF publishes a pose covariance — somebody should confirm `robot_localization` is filling it in rather than leaving the default, then use it. Until then the panel marks the figure "assumed". |
 | `OS3D_POINT_SET` layout (Q8) | `src/omniscan_bridge/core/ping_protocol.py` | From Cerulean's published docs, never run against a real device. |
-| Relay and ESC meanings (Q7) | `src/asket_gui/src/lib/hull.js` | `RELAY_LABELS` is empty on purpose — no relay is given a name nobody has confirmed. |
+| ESC status codes beyond 0 (Q7) | `src/asket_gui/src/lib/hull.js` | Still uninterpreted. The firmware reports no ESC code over serial at all — `esc_status` arrives only from `asket_sim`. **The relay is no longer provisional**: there is one, GPIO21, cutting ESC power, confirmed in firmware source and now named. See §16. |
+| **E-stop power feedback** | firmware `ESTOP_FEEDBACK_ENABLED` | **0.** Nothing confirms the ESC rail actually collapsed when the relay was commanded open. Pre-flight `pico.estop_feedback` WARNs every run until it is 1. See §16. |
 
 ---
 
@@ -774,3 +775,71 @@ propellers with nobody present, which is what channel 7 exists to prevent.
 it: the Pico does not reboot in that scenario, only the Jetson does, so the arm
 state is live in the firmware throughout. What kills propulsion is the SBUS
 failsafe, not the arming logic.
+
+
+---
+
+## 16. The e-stop path: one unverified claim, and one wrong number
+
+Both of these are about the relay that cuts ESC power, which is the worst place
+in this system to be silent or to be wrong. Neither changes how the boat
+behaves; both change whether somebody can tell what it is doing.
+
+### 16.1 Nothing verifies that the rail actually collapsed
+
+`ESTOP_FEEDBACK_ENABLED` is **0** in `firmware/pico-node_v4/`. The GPIO20
+divider trace is cut for bench testing, so `check_power_feedback()` compiles to
+nothing.
+
+**Commanding the relay open and observing the rail drop are two different
+claims, and only the first is being made.** A green vessel panel is not
+evidence of the second.
+
+The pre-flight check `pico.estop_feedback` now **WARNs on every run** while that
+is true, and says what is not verified rather than reporting that a flag is off
+— a crew reading `ESTOP_FEEDBACK_ENABLED is 0` learns nothing.
+
+It is amber rather than red on purpose. The vessel is not unsafe to operate:
+the hardware killswitch and RC channel 8 both cut propulsion independently.
+It is *unverified*, which is a different claim, and blocking launch on it would
+teach the crew to discount the verdict — the same reasoning as the mounting
+check in §5.2.
+
+To close it: set the firmware flag to 1 **and**
+`ESTOP_FEEDBACK_ENABLED` in `asket_common/mode_arbitration.py` to `True` in the
+same change. The cross-check test (§14) fails if the two disagree, in either
+direction — a stale warning trains people to ignore ambers, and a missing one
+hides a real gap.
+
+### 16.2 There is one relay, not four
+
+The panel read `0/4 relays closed`. There is no fourth relay and there never
+was: the `4` came from `num_relays` in the **simulator's** placeholder config,
+and the GUI faithfully rendered whatever length of array arrived.
+
+The real path was never wrong — `adapters.py` builds `[relay_closed]` from the
+single `relay=` field — so this existed only in simulation and mock mode, which
+is exactly where this GUI gets reviewed. The sentence it formed was about the
+e-stop path: three quarters of a safety mechanism appearing not to exist.
+
+Corrected at both ends (`asket_sim/core/pico.py` and the JS mock) and pinned by
+a cross-language test, because fixing one and not the other would leave sim mode
+and mock mode disagreeing about the e-stop path.
+
+The relay is now **named** — `ESC power`, GPIO21 — because unlike the hull
+wiring its function is confirmed in firmware source rather than guessed, and it
+carries a description saying that open-while-disarmed is correct rather than a
+fault. The summary line says `ESC power open` instead of counting to one.
+
+What stays unnamed is what is still unconfirmed: any further relay this hull
+might grow, and every ESC status code beyond 0. A panel that hedges about
+everything teaches an operator to discount all of it, so the two are described
+differently on purpose.
+
+### 16.3 `ESC_ARM_DELAY_MS`, pinned
+
+Restored as a mirror in `asket_common/mode_arbitration.py` and checked against
+the sketch. It is how long the firmware holds both thrusters at neutral after
+closing the relay, while the ESCs boot — unpinned, it is how software comes to
+read a vessel correctly waiting out its arm window as a vessel ignoring its
+throttle. An unpinned constant is how the next drift starts.

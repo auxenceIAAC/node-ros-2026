@@ -37,6 +37,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import BatteryState, Imu, LaserScan, NavSatFix
 
+from asket_common.mode_arbitration import ESTOP_FEEDBACK_ENABLED
 from system_test.core.checks import FAIL, PASS, SKIPPED, WARN, Thresholds, run_checks
 from system_test.core.history import PreflightHistory
 
@@ -207,6 +208,10 @@ class SystemTestNode(Node):
             "rc_channel8_raw": int(pico.rc_channel8_raw) if pico else None,
             "rc_channel7_raw": int(pico.rc_channel7_raw) if pico else None,
             "pico_firmware_version": (int(pico.firmware_version) or None) if pico else None,
+            # A firmware compile flag, not a wire field: the Pico cannot
+            # report whether its own feedback was compiled in. Mirrored in
+            # asket_common and pinned to the sketch by the cross-check test.
+            "pico_estop_feedback_enabled": ESTOP_FEEDBACK_ENABLED,
             "num_sats": None,
             "gnss_fix_type": (int(fix.status.status) + 3) if fix else None,
             "hdop": (math.sqrt(fix.position_covariance[0]) / 2.5)

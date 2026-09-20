@@ -129,13 +129,31 @@ def test_relay_and_esc_bytes_are_decoded_into_words():
     assert data["disarmed"]["alert"] is None
 
 
-def test_no_relay_is_given_a_name_nobody_has_confirmed():
-    """Which load each relay drives lives in pico_bridge, which this repository
-    must not modify (Q7). Inventing 'Bilge pump' would be a caption an operator
-    would act on."""
+def test_nothing_is_given_a_name_nobody_has_confirmed():
+    """A caption is something an operator acts on, so it has to be earned.
+
+    This used to assert that `RELAY_LABELS` was empty, which was the right rule
+    read through the wrong fact: the panel said `0/4 relays closed` and none of
+    the four was named. There is **one** relay, `ESTOP_RELAY_PIN` on GPIO21,
+    and its function is confirmed in `firmware/pico-node_v4/` — so naming it
+    "ESC power" is reading the source, not inventing a caption.
+
+    What is still unconfirmed stays unnamed: any further relay this hull might
+    grow, and every ESC status code beyond 0. The firmware reports no ESC code
+    over serial at all.
+    """
     text = source("lib", "hull.js")
-    assert "export const RELAY_LABELS = {};" in text
+
+    # The one relay whose function is in the firmware, named.
+    assert "export const RELAY_LABELS = { 0: 'ESC power' };" in text
+
+    # Nothing hull-specific invented for the rest. `relayName()` falls back to
+    # a bare index, and the ESC codes keep their PROVISIONAL marker.
+    assert "`Relay ${index + 1}`" in text
     assert "PROVISIONAL (Q7)" in text
+    assert "ESC_STATUS_LABELS = { 0: 'running' }" in text
+    for invented in ("Bilge", "pump", "Nav light", "Main power"):
+        assert invented not in text, f"hull.js invents a name: {invented}"
 
 
 # -- collapsing detail ----------------------------------------------------

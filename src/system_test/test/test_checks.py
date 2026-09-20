@@ -31,6 +31,7 @@ HEALTHY = dict(
     link_rtt_ms=25.0, link_active="wifi",
     expected_nodes=["omniscan_bridge"], present_nodes=["omniscan_bridge"],
     pico_state_format_verified=True, pico_state_parsed=True, pico_state_unknown_keys=[],
+    pico_estop_feedback_enabled=True,
     mounting=dict(
         path="/etc/asket/mounting.yaml", found=True, measured=True,
         measured_by="AD", measured_utc="2026-03-02", error="", unknown_fields=[],
@@ -390,3 +391,53 @@ def test_no_pico_status_at_all_is_unknown_not_a_pass():
     state = dict(HEALTHY)
     del state["pico_state_format_verified"]
     assert item(run_checks(state), "pico.state_format").status == SKIPPED
+
+
+# -- the e-stop feedback that does not exist yet ---------------------------
+
+
+def test_the_estop_feedback_warns_on_every_run_while_it_is_compiled_out():
+    """What the repository ships with today.
+
+    ESTOP_FEEDBACK_ENABLED is 0, so nothing in the firmware confirms the ESC
+    rail actually collapsed when the relay was commanded open. Commanding a
+    relay and observing the rail drop are two different claims and only the
+    first is being made — so the pre-flight says so, every run, until somebody
+    enables it.
+    """
+    report = run_checks(dict(HEALTHY, pico_estop_feedback_enabled=False))
+    result = item(report, "pico.estop_feedback")
+    assert result.status == WARN
+    # The message has to say what is *not verified*, not merely that a flag is
+    # off. A crew reading "ESTOP_FEEDBACK_ENABLED is 0" learns nothing.
+    assert "collapsed" in result.message or "verified" in result.message.lower()
+    assert "relay was commanded open" in result.message
+    assert "ESTOP_FEEDBACK_ENABLED" in result.remedy
+
+    # Amber, not red: the vessel is not unsafe to operate — the hardware
+    # killswitch and RC channel 8 both cut propulsion independently — it is
+    # unverified, which is a different claim. Blocking launch on it would teach
+    # the crew to ignore the verdict.
+    assert report.go
+
+
+def test_the_estop_feedback_passes_once_the_firmware_confirms_the_rail():
+    report = run_checks(dict(HEALTHY, pico_estop_feedback_enabled=True))
+    assert item(report, "pico.estop_feedback").status == PASS
+
+
+def test_a_build_that_does_not_report_the_flag_is_unknown_not_fine():
+    """Unknown is not pass, here as everywhere else."""
+    state = dict(HEALTHY)
+    del state["pico_estop_feedback_enabled"]
+    result = item(run_checks(state), "pico.estop_feedback")
+    assert result.status == SKIPPED
+    assert result.remedy
+
+
+def test_the_shipped_default_is_off_so_the_warning_is_the_normal_case():
+    """If somebody flips the Python mirror without the firmware, this fails —
+    and the cross-check test in asket_common fails alongside it."""
+    from asket_common.mode_arbitration import ESTOP_FEEDBACK_ENABLED
+
+    assert ESTOP_FEEDBACK_ENABLED is False

@@ -243,6 +243,49 @@ def _state_format(state: dict, t: Thresholds) -> CheckResult:
     )
 
 
+@check("pico.estop_feedback", "E-stop power feedback")
+def _estop_feedback(state: dict, t: Thresholds) -> CheckResult:
+    """Does anything actually verify that ESC power dropped when commanded?
+
+    No. ``ESTOP_FEEDBACK_ENABLED`` is 0 in the firmware — the GPIO20 divider
+    trace is cut for bench testing — so ``check_power_feedback()`` compiles to
+    nothing and the firmware never confirms the relay did what it was told.
+
+    **Commanding the relay open and observing the rail collapse are two
+    different claims, and only the first is being made.** A green vessel panel
+    is not evidence of the second.
+
+    This WARNs on every run until the feedback is enabled, for the same reason
+    the mounting-geometry check does: an assumption nobody is reminded of
+    quietly becomes a belief. It is amber rather than red because the vessel is
+    not unsafe to operate — the hardware killswitch and RC channel 8 both cut
+    propulsion independently — it is unverified, which is a different thing and
+    is worth saying in different words.
+    """
+    enabled = state.get("pico_estop_feedback_enabled")
+    if enabled is None:
+        return _missing("pico.estop_feedback", "E-stop power feedback",
+                        "not reported by this build")
+
+    if not enabled:
+        return CheckResult(
+            "pico.estop_feedback", "E-stop power feedback", WARN,
+            "Not verified: nothing confirms the ESC rail actually collapsed "
+            "when the relay was commanded open",
+            "ESTOP_FEEDBACK_ENABLED is 0 in firmware/pico-node_v4 and the "
+            "GPIO20 divider trace is cut for bench testing. Set it to 1, and "
+            "ESTOP_FEEDBACK_ENABLED in gui_backend/core/pico_state.py to True "
+            "in the same change, once the hardware is ready. Until then the "
+            "hardware killswitch and RC channel 8 are the only propulsion cuts "
+            "with any confirmation behind them.",
+        )
+
+    return CheckResult(
+        "pico.estop_feedback", "E-stop power feedback", PASS,
+        "Enabled: the firmware confirms the rail collapsed", "",
+    )
+
+
 #: Channel 8 below this forces MODE_ESTOP in the firmware (``MODE_LOW_MAX``).
 #: A **raw SBUS count**, not a percentage: the scale is 172..1811 with 991 at
 #: centre. The previous threshold here was ``< 25``, applied to a field named

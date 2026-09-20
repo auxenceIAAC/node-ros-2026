@@ -123,6 +123,16 @@ are compared across languages by running the JavaScript under Node.
   software. Where that makes the vessel look broken, say why rather than hiding
   it: `arming_block_reason()` computes the sentence once and the panels render
   it. See `INTEGRATION_STATUS.md` §15.
+- **The `pico.estop_feedback` amber is correct, not a bug to silence.**
+  `ESTOP_FEEDBACK_ENABLED` is 0, so nothing confirms the ESC rail actually
+  collapsed when the relay was commanded open. Clear it by enabling the
+  feedback in the firmware *and* flipping the mirror in
+  `mode_arbitration.py` — never by removing the check. See
+  `INTEGRATION_STATUS.md` §16.
+- **One relay, named `ESC power` (GPIO21).** Its function is confirmed in
+  firmware source, so it is named; ESC status codes beyond 0 are not, so they
+  are not. If you add a source of `relay_states`, it sends one — the panel
+  renders whatever length arrives, which is how `0/4 relays closed` happened.
 - `/pico/status` is a `std_msgs/String` of raw firmware `STATE` lines. The
   parser is isolated in `gui_backend/core/pico_state.py` and is `PROVISIONAL`:
   nobody here has seen a real line. Do not treat a green Pico panel as evidence

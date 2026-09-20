@@ -36,6 +36,8 @@ import pytest
 
 from asket_common.mode_arbitration import (
     ARM_THRESHOLD,
+    ESC_ARM_DELAY_MS,
+    ESTOP_FEEDBACK_ENABLED,
     FIRMWARE_MODE_NUMBERS,
     HEARTBEAT_TIMEOUT_S,
     MODE_AUTONOMOUS,
@@ -255,6 +257,30 @@ def test_the_protocol_version_matches_the_firmware():
     from gui_backend.core.pico_state import PROTOCOL_VERSION
 
     assert _constant(r"#define FW_VERSION (\d+)", "FW_VERSION") == PROTOCOL_VERSION
+
+
+def test_the_esc_arm_delay_matches_the_firmware():
+    """How long the firmware holds neutral after closing the relay.
+
+    Unpinned, this is how the next drift starts: software would read a vessel
+    correctly waiting out its arm window as a vessel ignoring its throttle.
+    """
+    assert _constant(
+        r"const unsigned long ESC_ARM_DELAY_MS = (\d+);", "ESC_ARM_DELAY_MS"
+    ) == ESC_ARM_DELAY_MS
+
+
+def test_the_estop_feedback_flag_matches_the_firmware():
+    """The flag the pre-flight warns about, pinned to the thing it describes.
+
+    If somebody enables the feedback in firmware and not here, the pre-flight
+    keeps warning about a problem that no longer exists — and a crew that learns
+    to ignore one amber row learns to ignore the next. If the reverse, the GUI
+    stops warning about a real one, which is worse.
+    """
+    assert bool(
+        _constant(r"#define ESTOP_FEEDBACK_ENABLED (\d+)", "ESTOP_FEEDBACK_ENABLED")
+    ) is ESTOP_FEEDBACK_ENABLED
 
 
 def test_the_failsafe_timeouts_are_both_500ms():

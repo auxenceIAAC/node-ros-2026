@@ -69,3 +69,39 @@ def test_recovery_is_possible_once_the_hardware_releases():
 def test_invalid_mode_is_rejected():
     pico = PicoSim()
     assert pico.request_mode(99) is False
+
+
+# -- one relay, because there is one relay ---------------------------------
+
+
+def test_the_simulator_has_exactly_one_relay():
+    """There is one relay on this hull: ESTOP_RELAY_PIN on GPIO21, cutting ESC
+    power. The firmware has never had more.
+
+    ``num_relays`` was 4 — a placeholder nobody revisited — and the GUI
+    faithfully rendered whatever length of array arrived, so the panel read
+    ``0/4 relays closed``. That is a statement about the e-stop path, and it
+    was false: three quarters of a safety mechanism appearing not to exist.
+
+    The real path was never wrong (``adapters.py`` builds ``[relay_closed]``
+    from the single ``relay=`` field), so the lie lived only in simulation —
+    which is exactly where this GUI gets reviewed.
+    """
+    pico = PicoSim(PicoConfig())
+    assert PicoConfig().num_relays == 1
+    assert len(pico.sample(0).relay_states) == 1
+
+
+def test_the_relay_follows_arming():
+    """Open while disarmed is correct, not a fault — and it stays one relay."""
+    pico = PicoSim(PicoConfig(confirm_delay_s=0.0))
+
+    pico.request_mode(MODE_ESTOP)
+    step(pico, 0.2)
+    assert pico.sample(0).armed is False
+    assert pico.sample(0).relay_states == [False]
+
+    pico.request_mode(MODE_MANUAL)
+    step(pico, 0.2)
+    assert pico.sample(0).armed is True
+    assert pico.sample(0).relay_states == [True]

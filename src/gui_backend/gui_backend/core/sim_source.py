@@ -20,6 +20,7 @@ from asket_common.heading import (
     SOURCE_MAGNETOMETER,
     evaluate_heading,
 )
+from asket_common.mode_arbitration import ESTOP_FEEDBACK_ENABLED
 from asket_common.survey import swath_half_width_m
 from asket_sim.core.faults import FAULTS
 from asket_sim.core.pico import MODE_NAMES, MODE_VALUES
@@ -472,6 +473,10 @@ class SimSource:
             "rc_channel8_raw": snap.pico.rc_channel8_raw,
             "rc_channel7_raw": snap.pico.rc_channel7_raw,
             "pico_firmware_version": snap.pico.firmware_version,
+            # A firmware compile flag, not a wire field: the Pico cannot tell
+            # us whether its own feedback was compiled in. Mirrored in
+            # pico_state and pinned to the sketch by the cross-check test.
+            "pico_estop_feedback_enabled": ESTOP_FEEDBACK_ENABLED,
             "num_sats": snap.vessel.num_sats,
             "gnss_fix_type": snap.vessel.gnss_fix_type,
             "hdop": snap.vessel.hdop,
