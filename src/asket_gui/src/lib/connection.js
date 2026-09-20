@@ -29,6 +29,9 @@
 const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 15000];
 const SKEW_WINDOW = 32;
 
+// Notices that a single incoming frame disproves.
+const SILENCE_NOTICES = new Set(['no_streams', 'nothing_emitted', 'tick_failed']);
+
 function initialState() {
   return {
     connected: false,
@@ -223,8 +226,15 @@ export class Connection {
         this.#set({
           streams,
           firstDataAt: this.state.firstDataAt ?? now,
-          // Data is arriving; whatever the server complained about is over.
-          notice: this.state.notice?.code === 'no_streams' ? null : this.state.notice,
+          // A frame arriving disproves every "you are receiving nothing"
+          // notice, so they clear here rather than waiting to be contradicted.
+          // The server re-broadcasts `tick_failed` on a schedule, so if the
+          // fault is ongoing the banner comes straight back — which is better
+          // than one that sticks after the problem has passed and teaches the
+          // crew to ignore the banner.
+          notice: SILENCE_NOTICES.has(this.state.notice?.code)
+            ? null
+            : this.state.notice,
         });
         break;
       }

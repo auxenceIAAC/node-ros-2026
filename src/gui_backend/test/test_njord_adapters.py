@@ -5,11 +5,12 @@ attributes, which is what lets them be tested on a laptop. The stand-ins below
 mirror the real messages field for field.
 """
 
+import json
 import math
 from types import SimpleNamespace
 
 import pytest
-from gui_backend.core import adapters
+from gui_backend.core import adapters, payloads
 
 
 def header(sec=1_800_000_000, nsec=0):
@@ -200,3 +201,92 @@ def test_a_cloud_without_x_and_y_yields_nothing_rather_than_guessing():
     empty = SimpleNamespace(header=header(), fields=[], point_step=12,
                             is_bigendian=False, data=b"")
     assert adapters.obstacles_from_pointcloud(empty) == []
+
+
+# -- the class of bug, not the instance ------------------------------------
+#
+# Twice now a payload function has crashed on a field that is absent by design:
+# `int(sample.rc_channel8_raw_pct)` on a STATE line that did not carry it, and
+# `int(sample.num_sats)` on a NavSatFix, which never carries one. Both were
+# unreachable in sim, because SimSource fills every field with a real value.
+#
+# So the check is not "does num_sats work" but "does anything the ROS adapters
+# can produce survive being serialised".
+
+
+def _ros_shaped_fix(**overrides):
+    """A NavSatFix as Gazebo actually sends it, fields overridable."""
+    header = SimpleNamespace(stamp=SimpleNamespace(sec=1789932000, nanosec=0))
+    base = dict(
+        header=header,
+        latitude=63.430499999730479,
+        longitude=10.395097370687948,
+        altitude=0.39618292078375816,
+        position_covariance=[0.0] * 9,
+        status=SimpleNamespace(status=0),
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _ros_shaped_odom(vx=1e-13, vy=1e-13):
+    header = SimpleNamespace(stamp=SimpleNamespace(sec=1789932000, nanosec=0))
+    return SimpleNamespace(
+        header=header,
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)
+            )
+        ),
+        twist=SimpleNamespace(
+            twist=SimpleNamespace(linear=SimpleNamespace(x=vx, y=vy, z=0.0))
+        ),
+    )
+
+
+@pytest.mark.parametrize("detail", ["minimal", "reduced", "full"])
+def test_a_real_gazebo_fix_survives_the_vessel_payload(detail):
+    """The exact message from the Jetson, at every detail level.
+
+    `full` is the one that crashed, and it was only reachable once the link
+    profile stopped degrading itself — so fixing one fault is what exposed
+    this one. A stationary vessel publishing an identical fix at 2 Hz is
+    exactly the case that was running when it went down.
+    """
+    record = adapters.vessel_from_odometry(
+        _ros_shaped_fix(), _ros_shaped_odom(), None,
+        extra={"heading_source": "ekf", "heading_valid": True,
+               "distance_travelled_m": 0.0},
+    )
+    payload = payloads.vessel_payload(record, detail)
+
+    if detail == "full":
+        # Absent, and absent means null — never 0, which on a GNSS panel reads
+        # as a failed fix and would ground a healthy vessel.
+        assert "num_sats" in payload
+        assert payload["num_sats"] is None
+
+
+def test_no_ros_vessel_record_can_break_the_payload():
+    """Every optional field, absent, one at a time and all at once."""
+    variants = {
+        "no covariance": _ros_shaped_fix(position_covariance=[0.0] * 9),
+        "no status": _ros_shaped_fix(status=SimpleNamespace(status=-1)),
+        "real covariance": _ros_shaped_fix(
+            position_covariance=[2.5] + [0.0] * 8
+        ),
+    }
+    for label, fix in variants.items():
+        for odom in (None, _ros_shaped_odom()):
+            record = adapters.vessel_from_odometry(fix, odom, None)
+            for detail in ("minimal", "reduced", "full"):
+                try:
+                    body = payloads.vessel_payload(record, detail)
+                except Exception as exc:                      # pragma: no cover
+                    raise AssertionError(
+                        f"{label} / odom={odom is not None} / {detail} "
+                        f"raised {type(exc).__name__}: {exc}"
+                    ) from exc
+                # Serialising is the real test: a NaN or a numpy scalar that
+                # survives the function still breaks the socket.
+                json.dumps(body)

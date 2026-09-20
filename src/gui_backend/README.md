@@ -119,3 +119,33 @@ nothing is pushed before a subscription, that a client asking for too much is
 told what it is getting, that a mode command goes `pending` → `confirmed` from
 the vessel's own status, and that a slow client loses its oldest frames rather
 than stalling the hub.
+
+## Debugging "the page is up and nothing is arriving"
+
+This failure has now happened twice in the field, from two unrelated causes,
+and it looks identical both times: the page renders, the socket upgrades, the
+pings answer, every panel says "not sent". That is also what a switched-off
+boat looks like, which is why it costs hours rather than minutes.
+
+**Open DevTools before you load the page.** Chrome's WebSocket frame inspector
+only records frames from the moment DevTools was opened on that request. The
+whole negotiation — `hello`, `subscribe`, `subscribed`, and any
+`stream_unavailable` — happens in the first second. Open the panel afterwards
+and you see ping/pong and conclude the client never subscribed. It did.
+
+Then read, in this order:
+
+1. **The banner at the top of the page.** The server says which half is broken:
+   `no_streams` means the link profile refused the subscription, and
+   `nothing_emitted` means the negotiation succeeded and the emit path is at
+   fault. They send you to opposite ends of the system.
+2. **The node's log.** The hub logs a warning naming the profile and the
+   granted streams after 30 s of silence, and logs a full traceback the first
+   time a tick raises. A tick that raises no longer ends the loop — it costs
+   one stream for one tick and says so.
+3. **`/api/health`.** Reports the live profile, its reason, the client count
+   and the source's own description, with no browser involved.
+
+```bash
+curl -s http://<jetson>:8090/api/health | python3 -m json.tool
+```

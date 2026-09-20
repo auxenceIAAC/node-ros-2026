@@ -703,3 +703,125 @@ def test_a_healthy_client_is_never_accused_of_starving():
 
     collected = run_collecting(hub, session, Hub.STARVED_AFTER_S + 5.0)
     assert not [m for m in collected if m.get("type") == "notice"]
+
+
+# -- the Jetson fault, second run: granted, publishing, and silent ---------
+#
+# Fault 1 fixed, Gazebo confirmed publishing, every stream granted at the
+# requested rate — and the socket still carried only ping/pong. One exception
+# under tick() ended the hub's task, and asyncio does not surface a dead task's
+# exception until it is collected, so nothing anywhere said so.
+#
+# Note the ordering: this was only reachable ONCE fault 1 was fixed. The
+# crashing branch is at `full` detail, and the degraded profile had been
+# serving `minimal`, which returns before it.
+
+
+class _ExplodingSource(SimSource):
+    """A source whose snapshot raises, the way a real NavSatFix did."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.explode = True
+        self.calls = 0
+
+    def snapshot(self, stream, detail="full", cursor=0):
+        self.calls += 1
+        if self.explode and stream == "vessel":
+            raise TypeError(
+                "int() argument must be a string, a bytes-like object or a "
+                "real number, not 'NoneType'"
+            )
+        return super().snapshot(stream, detail, cursor)
+
+
+def test_one_bad_tick_does_not_end_the_broadcast(caplog):
+    """The loop had no guard. One raise ended every stream for every client,
+    for as long as the process stayed up, with nothing in the log."""
+    hub = Hub(_ExplodingSource(SimWorld(WorldConfig()), time_scale=10.0), tick_hz=20.0)
+    session = ClientSession("browser")
+    hub.add_client(session)
+    hub.subscribe(session, [{"name": "vessel", "rate_hz": 5}, {"name": "pico", "rate_hz": 2}])
+
+    with caplog.at_level("ERROR"):
+        collected = run_collecting(hub, session, 3.0)
+
+    assert hub._tick_failures > 0, "the test source did not raise"
+    # The unaffected stream keeps flowing. Before the guard, `pico` died with
+    # `vessel` because they share a tick.
+    assert [m for m in collected if m.get("stream") == "pico"], (
+        "one stream's failure took down an unrelated stream"
+    )
+    assert any("hub tick raised" in r.getMessage() for r in caplog.records), (
+        "the failure was swallowed, which is how it hid for two deployments"
+    )
+
+
+def test_the_tick_loop_recovers_when_the_fault_clears():
+    hub = Hub(_ExplodingSource(SimWorld(WorldConfig()), time_scale=10.0), tick_hz=20.0)
+    session = ClientSession("browser")
+    hub.add_client(session)
+    hub.subscribe(session, [{"name": "vessel", "rate_hz": 5}])
+
+    run_collecting(hub, session, 2.0)
+    hub.source.explode = False
+    collected = run_collecting(hub, session, 2.0, start=2000.0)
+
+    assert [m for m in collected if m.get("stream") == "vessel"]
+
+
+def test_repeated_failures_do_not_flood_the_log(caplog):
+    """A fault firing twenty times a second must stay readable."""
+    hub = Hub(_ExplodingSource(SimWorld(WorldConfig()), time_scale=10.0), tick_hz=20.0)
+    session = ClientSession("browser")
+    hub.add_client(session)
+    hub.subscribe(session, [{"name": "vessel", "rate_hz": 5}])
+
+    with caplog.at_level("ERROR"):
+        run_collecting(hub, session, 10.0)
+
+    logged = [r for r in caplog.records if "hub tick raised" in r.getMessage()]
+    # vessel is due 5x a second, so ten seconds is ~50 failures. The limiter
+    # reports the 1st and the 10th and then goes quiet until the 100th.
+    assert hub._tick_failures > 30, "not enough failures to test the limiter"
+    assert len(logged) <= 3, f"{len(logged)} log lines for {hub._tick_failures} failures"
+    assert logged, "rate limiting silenced it completely"
+    # And the first one carries a traceback, or it is not actionable.
+    assert logged[0].exc_info is not None
+
+
+def test_granted_streams_that_never_emit_are_reported(caplog):
+    """The visibility ask, second time round.
+
+    "Nothing granted" and "granted and silent" look identical on screen and
+    have completely different causes, so the notice names which.
+    """
+    hub = Hub(_ExplodingSource(SimWorld(WorldConfig()), time_scale=10.0), tick_hz=20.0)
+    session = ClientSession("browser")
+    hub.add_client(session)
+    hub.subscribe(session, [{"name": "vessel", "rate_hz": 5}])
+    drain(session)
+
+    with caplog.at_level("WARNING"):
+        collected = run_collecting(hub, session, Hub.STARVED_AFTER_S + 2.0)
+
+    notices = [m for m in collected if m.get("type") == "notice"
+               and m.get("code") == "nothing_emitted"]
+    assert notices, "a granted-but-silent client was never told"
+    detail = notices[0]["detail"]
+    assert "granted and none ever emitted" in detail
+    # It must point at the emit path, not at the link profile — that is the
+    # difference between debugging the right half of the system and the wrong.
+    assert "not the link profile" in detail
+    assert "tick(s) have raised" in detail
+    assert any("receiving nothing" in r.getMessage() for r in caplog.records)
+
+
+def test_a_client_receiving_data_is_never_called_starved():
+    hub = Hub(SimSource(SimWorld(WorldConfig()), time_scale=10.0), tick_hz=20.0)
+    session = ClientSession("browser")
+    hub.add_client(session)
+    hub.subscribe(session, [{"name": "vessel", "rate_hz": 5}])
+
+    collected = run_collecting(hub, session, Hub.STARVED_AFTER_S + 5.0)
+    assert not [m for m in collected if m.get("type") == "notice"]

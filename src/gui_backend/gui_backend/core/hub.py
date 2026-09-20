@@ -184,6 +184,9 @@ class Hub:
         self._active_alarms: list[alarms_mod.Alarm] = []
         self._running = False
         self._task: asyncio.Task | None = None
+        #: Ticks that raised. Non-zero means streams are being lost.
+        self._tick_failures = 0
+        self._tick_failures_reported = 0
 
     # -- clients ----------------------------------------------------------
 
@@ -387,16 +390,38 @@ class Hub:
     # -- the loop ---------------------------------------------------------
 
     def tick(self, now_s: float | None = None) -> None:
+        """One pass of the broadcast loop. Never raises.
+
+        The guard is here rather than in :meth:`run` so that every caller gets
+        the property, and because a hub that stops ticking stops being a hub:
+        this loop had no guard at all, so one exception under it ended the
+        asyncio task outright. asyncio does not surface a dead task's exception
+        until it is garbage collected, uvicorn at ``log_level=warning`` never
+        showed it, and the per-connection ping task kept answering — so the
+        socket stayed up, looked healthy, and carried nothing. It took a real
+        Gazebo fix to trigger: ``int(None)`` on a satellite count that is
+        absent by design.
+
+        Catching broadly is deliberate. The alternative is that the *next*
+        unanticipated conversion error also takes the vessel's telemetry down
+        without a word, and nobody on a beach can debug what was never
+        reported. :meth:`_push_streams` isolates failures per stream first, so
+        this backstop only catches the rest of the tick.
+        """
         self._now_s = now_s if now_s is not None else time.monotonic()
         now_s = self._now_s
-        self.source.step(now_s)
-        now_utc = self.source.now_utc_ms()
+        try:
+            self.source.step(now_s)
+            now_utc = self.source.now_utc_ms()
 
-        self._auto_select(now_s)
-        self._update_commands(now_utc)
-        self._update_alarms(now_utc)
-        self._push_streams(now_s, now_utc)
-        self._report_starved_clients(now_s, now_utc)
+            self._auto_select(now_s)
+            self._update_commands(now_utc)
+            self._update_alarms(now_utc)
+            self._push_streams(now_s, now_utc)
+            self._report_starved_clients(now_s, now_utc)
+        except Exception:  # noqa: BLE001 - see the docstring
+            self._tick_failures += 1
+            self._report_tick_failure()
 
     def _update_commands(self, now_utc: int) -> None:
         state = self.source.state()
@@ -428,48 +453,99 @@ class Hub:
                     continue
                 if sub.first_tick_s is None:
                     sub.first_tick_s = now_s
-                spec = STREAMS[name]
+                try:
+                    self._push_one(session, name, sub, now_s, now_utc)
+                except Exception:  # noqa: BLE001
+                    # Isolated per stream so that one bad conversion costs one
+                    # stream, not the whole broadcast. A malformed lidar scan
+                    # must not be able to take the vessel's position off the
+                    # screen — they have nothing to do with each other, and on
+                    # a beach that distinction is the difference between a
+                    # degraded panel and a blank one.
+                    self._tick_failures += 1
+                    self._report_tick_failure()
 
-                if spec.on_change_only:
-                    sample = self.source.snapshot(name, sub.resolution.detail, sub.cursor)
-                    if sample is None:
-                        self._report_unavailable(session, name, sub, now_s, now_utc)
-                        continue
-                    digest = hash(repr(sample.payload))
-                    if digest == sub.last_payload_hash:
-                        continue
-                    sub.last_payload_hash = digest
-                else:
-                    if sub.resolution.rate_hz <= 0.0 or now_s < sub.next_due_s:
-                        continue
-                    sub.next_due_s = now_s + 1.0 / sub.resolution.rate_hz
-                    sample = self.source.snapshot(name, sub.resolution.detail, sub.cursor)
-                    if sample is None:
-                        self._report_unavailable(session, name, sub, now_s, now_utc)
-                        continue
+    def _push_one(
+        self,
+        session: ClientSession,
+        name: str,
+        sub: Subscription,
+        now_s: float,
+        now_utc: int,
+    ) -> None:
+        spec = STREAMS[name]
 
-                if name == "link":
-                    sample.payload.update(self._link_context(session))
+        if spec.on_change_only:
+            sample = self.source.snapshot(name, sub.resolution.detail, sub.cursor)
+            if sample is None:
+                self._report_unavailable(session, name, sub, now_s, now_utc)
+                return
+            digest = hash(repr(sample.payload))
+            if digest == sub.last_payload_hash:
+                return
+            sub.last_payload_hash = digest
+        else:
+            if sub.resolution.rate_hz <= 0.0 or now_s < sub.next_due_s:
+                return
+            sub.next_due_s = now_s + 1.0 / sub.resolution.rate_hz
+            sample = self.source.snapshot(name, sub.resolution.detail, sub.cursor)
+            if sample is None:
+                self._report_unavailable(session, name, sub, now_s, now_utc)
+                return
 
-                if sample.cursor is not None:
-                    sub.cursor = sample.cursor
+        if name == "link":
+            sample.payload.update(self._link_context(session))
 
-                sub.sent += 1
-                session.send(
-                    {
-                        "type": "data",
-                        "stream": name,
-                        # When it was PRODUCED. The client renders age from
-                        # this, so a slow link shows as stale data instead of
-                        # as fresh data that happens to be wrong.
-                        "source_utc_ms": sample.source_utc_ms,
-                        # When it was SENT, so the client can estimate clock
-                        # skew and not depend on the laptop's clock being right.
-                        "server_utc_ms": now_utc,
-                        "detail": sub.resolution.detail,
-                        "payload": sample.payload,
-                    }
-                )
+        if sample.cursor is not None:
+            sub.cursor = sample.cursor
+
+        sub.sent += 1
+        session.send(
+            {
+                "type": "data",
+                "stream": name,
+                # When it was PRODUCED. The client renders age from
+                # this, so a slow link shows as stale data instead of
+                # as fresh data that happens to be wrong.
+                "source_utc_ms": sample.source_utc_ms,
+                # When it was SENT, so the client can estimate clock
+                # skew and not depend on the laptop's clock being right.
+                "server_utc_ms": now_utc,
+                "detail": sub.resolution.detail,
+                "payload": sample.payload,
+            }
+        )
+
+    def _report_tick_failure(self) -> None:
+        """Log the traceback and tell every client, without flooding either.
+
+        Rate-limited by powers of ten rather than by a clock: the first failure
+        carries a full traceback, then the tenth, the hundredth and so on. A
+        fault that fires twenty times a second stays one line in the log, and a
+        fault that fires once still gets one.
+        """
+        count = self._tick_failures
+        if count not in (1, 10, 100, 1000) and count % 10_000:
+            return
+        self._tick_failures_reported = count
+        _log.exception(
+            "hub tick raised (%d time(s)); streams are being dropped. "
+            "The loop is still running — this is reported rather than fatal.",
+            count,
+        )
+        self.broadcast(
+            {
+                "type": "notice",
+                "server_utc_ms": self.source.now_utc_ms(),
+                "severity": "alarm",
+                "code": "tick_failed",
+                "text": "The server is failing to assemble telemetry.",
+                "detail": (
+                    f"{count} tick(s) have raised. Data may be missing or "
+                    "stale; the server log has the traceback."
+                ),
+            }
+        )
 
     #: How long a client may hold a socket with nothing granted before we say so.
     #:
@@ -482,23 +558,34 @@ class Hub:
     STARVED_AFTER_S = 30.0
 
     def _report_starved_clients(self, now_s: float, now_utc: int) -> None:
-        """Say so when a client is connected and subscribed to nothing.
+        """Say so when a connected client is receiving nothing.
 
-        Says it in both directions, because the two audiences are different and
-        neither can see the other's evidence: the operator at the browser knows
-        the page is blank but not why, and whoever reads the node's log can see
-        the profile but not what the page looks like.
+        Both shapes of it, because the symptom on screen is identical and the
+        causes are not:
+
+        * **nothing granted** — the client asked and the link profile refused;
+        * **granted and never emitted** — the negotiation succeeded and the
+          emit path is broken. This is the one that hid a dead tick loop behind
+          a healthy-looking socket.
+
+        Said in both directions, because neither audience can see the other's
+        evidence: the operator at the browser knows the page is blank but not
+        why, and whoever reads the node's log can see the profile but not what
+        the page looks like.
         """
         for session in self.clients.values():
             if session.first_tick_s is None:
                 session.first_tick_s = now_s
+
             granted = [
                 name for name, sub in session.subscriptions.items()
                 if sub.resolution.granted
             ]
-            if granted:
-                # Recovered, or never starved. Re-arm so a later starvation is
-                # reported on its own account.
+            emitted = sum(sub.sent for sub in session.subscriptions.values())
+
+            if emitted:
+                # Data is flowing. Re-arm so a later stall is reported on its
+                # own account rather than suppressed by an earlier one.
                 session.reported_starved = False
                 continue
             if session.reported_starved:
@@ -508,14 +595,24 @@ class Hub:
 
             session.reported_starved = True
             asked = len(session.subscriptions)
-            profile = self.selector.profile
-            reason = self.selector.reason
-            detail = (
-                f"asked for {asked} stream(s), granted none; "
-                f"link profile is {profile!r} ({reason})"
-                if asked
-                else "the client has not subscribed to anything"
-            )
+            if granted:
+                detail = (
+                    f"{len(granted)} stream(s) granted and none ever emitted "
+                    f"({', '.join(sorted(granted)[:6])}). The negotiation "
+                    "succeeded, so this is the server's emit path, not the "
+                    "link profile"
+                )
+                if self._tick_failures:
+                    detail += f"; {self._tick_failures} tick(s) have raised"
+            elif asked:
+                detail = (
+                    f"asked for {asked} stream(s), granted none; "
+                    f"link profile is {self.selector.profile!r} "
+                    f"({self.selector.reason})"
+                )
+            else:
+                detail = "the client has not subscribed to anything"
+
             _log.warning(
                 "client %s has been connected %.0f s and is receiving nothing: %s",
                 session.id, now_s - session.first_tick_s, detail,
@@ -525,7 +622,7 @@ class Hub:
                     "type": "notice",
                     "server_utc_ms": now_utc,
                     "severity": "alarm",
-                    "code": "no_streams",
+                    "code": "no_streams" if not granted else "nothing_emitted",
                     "text": "Connected, but receiving no data.",
                     "detail": detail,
                 }
