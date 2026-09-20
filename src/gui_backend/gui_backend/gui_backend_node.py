@@ -107,9 +107,22 @@ class GuiBackendNode(Node):
 
         # Feed the measurement back so automatic profile selection runs on what
         # the operator's laptop actually experiences.
-        self.source.set_link_measurement(
-            msg.active_link, msg.quality, msg.rtt_ms, 800_000.0
-        )
+        #
+        # Only when there IS a laptop. With no client attached there is nothing
+        # to measure: `quality` above is 1.0-if-clients, so an empty server was
+        # reporting quality 0.0 — "the link is dead" — when the truth is that
+        # nobody has tried it yet. The selector read that as a lost link and
+        # degraded to the `minimal` profile within seconds of boot, so the first
+        # browser to connect was served by the profile meant for a vessel over
+        # the horizon on LTE-M, and had most of its streams refused.
+        #
+        # The hub ignores measurements with no clients too. This is the same
+        # rule stated where the bad number is produced rather than only where
+        # it lands, because a fabricated measurement is worth not making.
+        if self.hub.clients:
+            self.source.set_link_measurement(
+                msg.active_link, msg.quality, msg.rtt_ms, 800_000.0
+            )
 
     def destroy_node(self) -> bool:
         self._server.should_exit = True

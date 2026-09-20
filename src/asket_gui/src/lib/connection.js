@@ -44,6 +44,16 @@ function initialState() {
     commands: {},
     skewMs: 0,
     lastMessageAt: null,
+    // When the server says it is serving us nothing, and why. The page can
+    // work out that data is not arriving on its own; it cannot work out that
+    // the link profile refused every stream, and that is the half that sends
+    // you to the right place.
+    notice: null,
+    // When the first `data` frame arrived on this socket. Null while a socket
+    // has been open but has never carried a payload — which is the state this
+    // GUI spent an hour in on its first real deployment, indistinguishable
+    // from a quiet vessel.
+    firstDataAt: null,
     // Bumped when the answer to "are there offline tiles" changes, so the map
     // re-asks. Only the mock has cause to change it.
     tileGeneration: 0,
@@ -123,7 +133,10 @@ export class Connection {
     this.ws = ws;
 
     ws.onopen = () => {
-      this.#set({ connected: true, connecting: false, attempts: 0, lastError: null });
+      this.#set({
+        connected: true, connecting: false, attempts: 0, lastError: null,
+        firstDataAt: null, notice: null,
+      });
       if (this.desired.length) this.subscribe(this.desired);
     };
 
@@ -207,12 +220,21 @@ export class Connection {
           detail: message.detail,
           receivedAt: now,
         };
-        this.#set({ streams });
+        this.#set({
+          streams,
+          firstDataAt: this.state.firstDataAt ?? now,
+          // Data is arriving; whatever the server complained about is over.
+          notice: this.state.notice?.code === 'no_streams' ? null : this.state.notice,
+        });
         break;
       }
 
       case 'alarms':
         this.#set({ alarms: message.active || [] });
+        break;
+
+      case 'notice':
+        this.#set({ notice: message });
         break;
 
       case 'command_result': {

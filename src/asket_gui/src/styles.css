@@ -216,6 +216,27 @@ body {
 
 .panel-detail { margin-top: 6px; }
 
+/* Connected and receiving nothing.
+ *
+ * Full width and at the top of the cockpit, above the map, because the failure
+ * it reports is one that otherwise looks exactly like a quiet vessel: the page
+ * renders, the socket stays up, every panel simply says "not sent". */
+.starved-banner {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--alarm);
+  border-left-width: 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--alarm) 10%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.starved-banner strong {
+  color: var(--alarm);
+}
+
 .forced-note {
   margin: 4px 0 0;
   font-size: 12px;

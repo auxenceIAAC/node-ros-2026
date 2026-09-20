@@ -3,6 +3,7 @@ the link can carry."""
 
 import pytest
 from asket_sim.core.world import SimWorld, WorldConfig
+from gui_backend.core import adapters
 from gui_backend.core.hub import ClientSession, Hub
 from gui_backend.core.sim_source import SimSource
 from gui_backend.core.streams import PROFILE_MINIMAL, PROFILE_REDUCED
@@ -497,3 +498,208 @@ def test_clock_drift_is_caught_by_the_preflight(hub, client):
     clock = next(i for i in hub.source.last_report.items if i.id == "sonar.clock")
     assert clock.status == "FAIL"
     assert "un-georeferenceable" in clock.remedy
+
+
+# -- the Jetson fault: a profile degraded before anybody connected ----------
+#
+# First run on real hardware: the page loaded, the socket upgraded, pings
+# answered, and no data ever arrived. Three defects compounded, and all three
+# are reproduced here because each on its own is survivable and together they
+# are silent.
+
+
+class _LinkOnlySource(SimSource):
+    """A SimSource driven the way ``gui_backend_node`` drives ``RosSource``.
+
+    The node measures the shore link once a second and reports
+    ``quality = 1.0 if clients else 0.0``. That is the number that broke it.
+
+    ``set_link_measurement`` exists on ``RosSource`` and not on ``SimSource``,
+    which is part of why none of this showed up in sim: the sim path has no
+    equivalent of the node's 1 Hz measurement at all, so automatic profile
+    selection — the thing that runs in the field — was exercised by nothing.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._node_link = None
+
+    def feed_node_measurement(self, clients: int) -> None:
+        self._node_link = adapters.link_from_measurements(
+            "wifi" if clients else "none", 1.0 if clients else 0.0, 0.0, 800_000.0
+        )
+
+    def state(self) -> dict:
+        out = super().state()
+        if self._node_link is not None:
+            out["link_sample"] = self._node_link
+        return out
+
+
+def _node_like_hub():
+    return Hub(_LinkOnlySource(SimWorld(WorldConfig()), time_scale=10.0))
+
+
+def test_an_idle_server_does_not_degrade_its_own_profile():
+    """The root cause.
+
+    Nobody connected means the link is UNKNOWN, not bad. Degrading it serves
+    nobody — there is no client to protect — and the only thing it can affect
+    is the next client to arrive, which is exactly the damage it did.
+    """
+    hub = _node_like_hub()
+    t = 1000.0
+    for i in range(600):          # 30 s at 20 Hz, no clients
+        t += 0.05
+        if i % 20 == 0:
+            hub.source.feed_node_measurement(clients=0)
+        hub.tick(t)
+
+    assert hub.selector.profile == "full", (
+        f"an idle server talked itself down to {hub.selector.profile!r} "
+        f"({hub.selector.reason}) before any browser opened"
+    )
+
+
+def test_the_first_browser_to_connect_gets_what_it_asked_for():
+    """What the operator actually saw: a blank page on a healthy vessel."""
+    hub = _node_like_hub()
+    t = 1000.0
+    for i in range(600):
+        t += 0.05
+        if i % 20 == 0:
+            hub.source.feed_node_measurement(clients=0)
+        hub.tick(t)
+
+    session = ClientSession("browser")
+    hub.add_client(session)
+    message = hub.subscribe(session, [
+        {"name": "vessel", "rate_hz": 5},
+        {"name": "heading", "rate_hz": 2},
+        {"name": "lidar", "rate_hz": 5},
+        {"name": "sonar", "rate_hz": 1},
+    ])
+    refused = [s["name"] for s in message["streams"] if not s["granted"]]
+    assert not refused, f"refused {refused} on a link nobody had even tried"
+
+
+def test_a_denied_stream_is_remembered_and_comes_back():
+    """A stream dropped from the session is a stream the server has forgotten
+    the client ever wanted, so a recovering link has nothing to give back."""
+    hub = _node_like_hub()
+    session = ClientSession("browser")
+    hub.add_client(session)
+
+    hub.selector.force(PROFILE_MINIMAL)
+    hub.subscribe(session, [{"name": "lidar", "rate_hz": 5}])
+    assert "lidar" in session.subscriptions, "the request was forgotten outright"
+    assert not session.subscriptions["lidar"].resolution.granted
+
+    session.resubscribe("full")
+    assert session.subscriptions["lidar"].resolution.granted, (
+        "the link recovered and lidar never came back"
+    )
+
+
+def test_a_clamped_rate_is_not_permanent():
+    """The ratchet: every degradation used to be forever, because the only rate
+    still recorded anywhere was the clamped one."""
+    hub = _node_like_hub()
+    session = ClientSession("browser")
+    hub.add_client(session)
+
+    hub.subscribe(session, [{"name": "vessel", "rate_hz": 5}])
+    assert session.subscriptions["vessel"].resolution.rate_hz == 5.0
+
+    session.resubscribe(PROFILE_MINIMAL)
+    clamped = session.subscriptions["vessel"].resolution.rate_hz
+    assert clamped < 5.0, "the minimal profile should clamp this"
+
+    session.resubscribe("full")
+    assert session.subscriptions["vessel"].resolution.rate_hz == 5.0, (
+        "recovery restored the clamped rate, not the requested one"
+    )
+
+
+def test_a_round_trip_through_every_profile_ends_where_it_started():
+    """Degrade and recover repeatedly; the client must end up whole."""
+    hub = _node_like_hub()
+    session = ClientSession("browser")
+    hub.add_client(session)
+
+    asked = [
+        {"name": "vessel", "rate_hz": 5}, {"name": "pico", "rate_hz": 2},
+        {"name": "heading", "rate_hz": 2}, {"name": "lidar", "rate_hz": 5},
+        {"name": "sonar", "rate_hz": 1}, {"name": "mission", "rate_hz": 1},
+    ]
+    hub.subscribe(session, asked)
+    before = {
+        n: s.resolution.rate_hz for n, s in session.subscriptions.items()
+    }
+
+    for profile in (PROFILE_REDUCED, PROFILE_MINIMAL, PROFILE_REDUCED, "full"):
+        session.resubscribe(profile)
+
+    after = {n: s.resolution.rate_hz for n, s in session.subscriptions.items()}
+    assert after == before, "a link that recovered did not give back what it took"
+
+
+# -- and when it does go wrong, it says so ---------------------------------
+
+
+def test_a_client_getting_nothing_is_told_so(caplog):
+    """The failure that took an hour to notice: a page that renders, a socket
+    that stays up, pings that answer, and no data at all. It now says so on the
+    page and in the node's log, because the operator and whoever reads the log
+    can each see only half of the evidence."""
+    hub = _node_like_hub()
+    session = ClientSession("browser")
+    hub.add_client(session)
+    hub.selector.force(PROFILE_MINIMAL)
+    hub.subscribe(session, [{"name": "lidar", "rate_hz": 5}])   # refused here
+    drain(session)
+
+    with caplog.at_level("WARNING"):
+        run(hub, Hub.STARVED_AFTER_S + 2.0)
+
+    notices = [m for m in drain(session) if m.get("type") == "notice"]
+    assert notices, "the page was never told it is receiving nothing"
+    assert notices[0]["code"] == "no_streams"
+    # The reason has to name the profile: "no data" alone sends somebody to
+    # check cables when the answer is in the link profile.
+    assert "minimal" in notices[0]["detail"]
+    assert any("receiving nothing" in r.getMessage() for r in caplog.records), (
+        "nothing in the server log"
+    )
+
+
+def test_the_notice_is_sent_once_and_re_arms_on_recovery():
+    """An alarm repeated every tick is an alarm nobody reads."""
+    hub = _node_like_hub()
+    session = ClientSession("browser")
+    hub.add_client(session)
+    hub.selector.force(PROFILE_MINIMAL)
+    hub.subscribe(session, [{"name": "lidar", "rate_hz": 5}])
+
+    run(hub, Hub.STARVED_AFTER_S + 2.0)
+    first = [m for m in drain(session) if m.get("type") == "notice"]
+    assert len(first) == 1
+
+    run(hub, 10.0)
+    assert not [m for m in drain(session) if m.get("type") == "notice"]
+
+    # Link recovers: the stream comes back, and a later starvation would be
+    # reported on its own account rather than suppressed by the earlier one.
+    session.resubscribe("full")
+    run(hub, 1.0)
+    assert session.reported_starved is False
+
+
+def test_a_healthy_client_is_never_accused_of_starving():
+    hub = _node_like_hub()
+    session = ClientSession("browser")
+    hub.add_client(session)
+    hub.subscribe(session, [{"name": "vessel", "rate_hz": 5}])
+
+    collected = run_collecting(hub, session, Hub.STARVED_AFTER_S + 5.0)
+    assert not [m for m in collected if m.get("type") == "notice"]

@@ -75,6 +75,29 @@ export function App({ connection }) {
     return 'ok';
   }, [state.alarms]);
 
+  // Connected, and the server has told us it is serving us nothing.
+  //
+  // The header already says "No data for 42 s", which is true and not
+  // actionable: a quiet vessel and a refused subscription look identical from
+  // there. This says WHICH, and it can say it the instant the `subscribed`
+  // frame lands rather than waiting for data that is never coming.
+  const starved = useMemo(() => {
+    const entries = Object.values(state.subscriptions || {});
+    if (!state.connected || entries.length === 0) return null;
+    if (entries.some((s) => s.granted)) return null;
+    const refused = entries.find((s) => s.reason);
+    return {
+      text: 'Connected, but the server is serving no streams.',
+      detail:
+        refused?.reason
+        || `link profile ${state.profile?.profile ?? '?'} (${state.profile?.reason ?? ''})`,
+    };
+  }, [state.subscriptions, state.connected, state.profile]);
+
+  const banner = state.notice
+    ? { text: state.notice.text, detail: state.notice.detail }
+    : starved;
+
   const layoutClass = [
     'app',
     connection.isMock ? (mockOpen ? 'with-mock' : 'with-mock-collapsed') : '',
@@ -128,6 +151,17 @@ export function App({ connection }) {
           </Chip>
         )}
       </header>
+
+      {/* Never hidden behind a disclosure triangle, and never only in a log.
+          On the first real deployment this exact state — socket up, pings
+          answering, every panel empty — took an hour to even notice, because
+          it is indistinguishable from a vessel that is switched off. */}
+      {banner && (
+        <div className="starved-banner" role="alert">
+          <strong>{banner.text}</strong>
+          {banner.detail ? <span> {banner.detail}</span> : null}
+        </div>
+      )}
 
       <MissionMap
         state={state}

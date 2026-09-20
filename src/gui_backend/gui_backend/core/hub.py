@@ -23,6 +23,7 @@ browser must never be able to stall the vessel's telemetry.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 
@@ -54,10 +55,23 @@ from .streams import (
 
 PROTOCOL_VERSION = 1
 
+#: Surfaces through ROS as well: the node runs uvicorn in a thread and
+#: stdlib logging reaches the same stderr that `output="screen"` captures.
+_log = logging.getLogger(__name__)
+
 
 @dataclass
 class Subscription:
     resolution: Resolution
+    #: What the client actually asked for, kept verbatim and never overwritten
+    #: by what a degraded profile allowed.
+    #:
+    #: Without this the clamp ratchets: a client that asked for vessel at 5 Hz
+    #: and was held to 0.2 Hz by the `minimal` profile came back at 0.2 Hz when
+    #: the link recovered, because the only rate still recorded anywhere was
+    #: the clamped one. Every degradation was permanent.
+    requested_rate_hz: float | None = None
+    requested_detail: str | None = None
     #: When this stream is next due, on the hub's tick clock. Zero means "due
     #: immediately" and is deliberately origin-independent: a subscription
     #: arriving before the first tick must not be scheduled against a clock
@@ -99,6 +113,12 @@ class ClientSession:
         self.rtt_ms: float | None = None
         self.last_pong_s: float = time.monotonic()
         self.bytes_estimate_per_s = 0.0
+        #: Hub-clock time this client was first seen by a tick. Stamped on
+        #: the tick rather than at construction so starvation is measured
+        #: on the same clock as everything else in this file.
+        self.first_tick_s: float | None = None
+        #: Whether this client has already been told it is getting nothing.
+        self.reported_starved: bool = False
 
     def send(self, message: dict) -> None:
         """Enqueue, dropping the oldest frame if the client is behind."""
@@ -121,12 +141,18 @@ class ClientSession:
         """
         results = []
         for name, sub in list(self.subscriptions.items()):
-            requested = sub.resolution
-            new = resolve(name, requested.rate_hz or None, None, profile)
+            new = resolve(name, sub.requested_rate_hz, sub.requested_detail, profile)
+            was_granted = sub.resolution.granted
             sub.resolution = new
             if new.granted:
                 sub.next_due_s = 0.0   # deliver once immediately at the new rate
                 sub.cursor = 0         # resync: the detail level may have changed
+                if not was_granted:
+                    # Coming back from a denial: let it report going quiet again
+                    # on its own merits rather than staying silent because it
+                    # once did.
+                    sub.first_tick_s = None
+                    sub.reported_unavailable = False
             results.append(new)
         self.bytes_estimate_per_s = estimate_bytes_per_s(
             [s.resolution for s in self.subscriptions.values()]
@@ -200,8 +226,18 @@ class Hub:
             res = resolve(
                 name, req.get("rate_hz"), req.get("detail"), self.selector.profile
             )
-            if res.granted:
-                session.subscriptions[name] = Subscription(res)
+            # Kept even when refused. A stream dropped from the session is a
+            # stream the server has forgotten the client ever wanted, so a
+            # recovering link has nothing to give back — which is how eight of
+            # twelve streams stayed dark on the Jetson for as long as the page
+            # was open. Denied subscriptions are inert: `_push_streams` skips
+            # anything not granted, and `estimate_bytes_per_s` ignores it.
+            if name in STREAMS:
+                session.subscriptions[name] = Subscription(
+                    res,
+                    requested_rate_hz=req.get("rate_hz"),
+                    requested_detail=req.get("detail"),
+                )
             else:
                 session.subscriptions.pop(name, None)
             results.append(res)
@@ -256,6 +292,25 @@ class Hub:
         return self.selector.to_dict()
 
     def _auto_select(self, now_s: float) -> None:
+        # Nobody connected means the link is UNKNOWN, not bad.
+        #
+        # This guard is the fix for a fault that made the GUI unusable on the
+        # Jetson. `gui_backend_node` measures the shore link once a second and
+        # reports `quality = 1.0 if clients else 0.0`; with no client attached
+        # that 0.0 reached the selector as `connected=False`, which targets the
+        # `minimal` profile. Two seconds after the node started — long before
+        # anybody opened a browser — the profile had degraded to `minimal` on
+        # the strength of nothing having connected yet.
+        #
+        # The first client then subscribed under that profile and had eight of
+        # its twelve streams refused outright. Degrading a link nobody is using
+        # serves nobody: the only thing it can affect is the *next* client to
+        # arrive, which is precisely the damage. Profile selection is about
+        # serving clients, so with none there is nothing to select for and the
+        # last real measurement stands.
+        if not self.clients:
+            return
+
         state = self.source.state()
         link = state.get("link_sample")
         if link is None:
@@ -341,6 +396,7 @@ class Hub:
         self._update_commands(now_utc)
         self._update_alarms(now_utc)
         self._push_streams(now_s, now_utc)
+        self._report_starved_clients(now_s, now_utc)
 
     def _update_commands(self, now_utc: int) -> None:
         state = self.source.state()
@@ -414,6 +470,66 @@ class Hub:
                         "payload": sample.payload,
                     }
                 )
+
+    #: How long a client may hold a socket with nothing granted before we say so.
+    #:
+    #: A connected client receiving nothing is the hardest failure in this
+    #: system to notice, because it looks exactly like a quiet vessel: the page
+    #: renders, the socket stays up, the pings answer. On the Jetson it took an
+    #: hour to even see. Thirty seconds is long enough that a client mid-
+    #: negotiation is not accused of it, and short enough to catch before
+    #: anybody starts reading launch files.
+    STARVED_AFTER_S = 30.0
+
+    def _report_starved_clients(self, now_s: float, now_utc: int) -> None:
+        """Say so when a client is connected and subscribed to nothing.
+
+        Says it in both directions, because the two audiences are different and
+        neither can see the other's evidence: the operator at the browser knows
+        the page is blank but not why, and whoever reads the node's log can see
+        the profile but not what the page looks like.
+        """
+        for session in self.clients.values():
+            if session.first_tick_s is None:
+                session.first_tick_s = now_s
+            granted = [
+                name for name, sub in session.subscriptions.items()
+                if sub.resolution.granted
+            ]
+            if granted:
+                # Recovered, or never starved. Re-arm so a later starvation is
+                # reported on its own account.
+                session.reported_starved = False
+                continue
+            if session.reported_starved:
+                continue
+            if now_s - session.first_tick_s < self.STARVED_AFTER_S:
+                continue
+
+            session.reported_starved = True
+            asked = len(session.subscriptions)
+            profile = self.selector.profile
+            reason = self.selector.reason
+            detail = (
+                f"asked for {asked} stream(s), granted none; "
+                f"link profile is {profile!r} ({reason})"
+                if asked
+                else "the client has not subscribed to anything"
+            )
+            _log.warning(
+                "client %s has been connected %.0f s and is receiving nothing: %s",
+                session.id, now_s - session.first_tick_s, detail,
+            )
+            session.send(
+                {
+                    "type": "notice",
+                    "server_utc_ms": now_utc,
+                    "severity": "alarm",
+                    "code": "no_streams",
+                    "text": "Connected, but receiving no data.",
+                    "detail": detail,
+                }
+            )
 
     #: How long a granted stream may produce nothing before the client is told.
     UNAVAILABLE_AFTER_S = 5.0
