@@ -27,6 +27,7 @@ Server to client::
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -44,6 +45,42 @@ from .tiles import MBTiles
 #: automatic profile selection runs on, so it must not be so rare that a link
 #: collapses between measurements.
 PING_INTERVAL_S = 2.0
+
+_log = logging.getLogger(__name__)
+
+
+def check_static_dir(static: Path) -> list[str]:
+    """Problems that would make the page load blank, stated before it does.
+
+    A missing frontend is already reported clearly. This covers the case that
+    is not: the directory is there, `index.html` serves, and the assets do not
+    — so the browser gets a 200, the right title, and an empty page. That is a
+    much worse failure than a 503, because it looks like the application has
+    started.
+    """
+    problems: list[str] = []
+
+    index = static / "index.html"
+    if not index.is_file():
+        problems.append(f"{index} is missing — run `npm run build` in src/asket_gui")
+        return problems
+
+    assets = static / "assets"
+    if not assets.is_dir():
+        problems.append(f"{assets} is missing; index.html has nothing to load")
+        return problems
+
+    files = sorted(assets.iterdir())
+    if not files:
+        problems.append(f"{assets} is empty; index.html has nothing to load")
+
+    for entry in files:
+        try:
+            with entry.open("rb") as handle:
+                handle.read(1)
+        except OSError as exc:
+            problems.append(f"{entry} cannot be read ({exc}) — a dangling symlink?")
+    return problems
 
 
 def create_app(
@@ -134,12 +171,27 @@ def create_app(
 
     if static_dir and Path(static_dir).is_dir():
         static = Path(static_dir)
+        for problem in check_static_dir(static):
+            _log.error("frontend will not serve correctly: %s", problem)
 
         @app.get("/")
         async def index() -> FileResponse:
             return FileResponse(static / "index.html")
 
-        app.mount("/", StaticFiles(directory=str(static), html=True), name="static")
+        # follow_symlink is load-bearing under `colcon build --symlink-install`.
+        #
+        # That mode installs the frontend as symlinks from
+        # install/gui_backend/share/gui_backend/static/ into build/, and
+        # StaticFiles' traversal guard rejects any path that resolves outside
+        # the directory it was given — so every asset came back 404 while the
+        # files themselves were present and readable. The `/` route below still
+        # served index.html, so the page loaded with the right title and an
+        # empty <div id="root">: a blank screen with a 200 on it.
+        app.mount(
+            "/",
+            StaticFiles(directory=str(static), html=True, follow_symlink=True),
+            name="static",
+        )
     else:
 
         @app.get("/")

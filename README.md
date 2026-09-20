@@ -34,6 +34,10 @@ This launches Gazebo with `basicWorld.sdf`, spawns the Asket URDF, bridges the s
 
 **Rebuild after adding new files** (`--symlink-install` means code edits don't need a rebuild for Python packages):
 ```bash
+# The mission GUI's frontend must be built BEFORE this, or colcon installs an
+# empty static directory and the GUI serves a 503. See src/gui_backend/README.md.
+cd src/asket_gui && npm install && npm run build && cd ../..
+
 colcon build --symlink-install
 source install/setup.bash
 ```

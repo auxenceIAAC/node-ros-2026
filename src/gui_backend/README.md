@@ -21,11 +21,28 @@ ros2 run gui_backend gui_backend_node --ros-args \
   -p topics_config:=$(ros2 pkg prefix gui_backend)/share/gui_backend/config/topics.yaml
 ```
 
-Either way the frontend must be built first:
+### Build the frontend BEFORE the workspace
+
+Not a style preference — an ordering the build cannot recover from on its own:
 
 ```bash
-cd src/asket_gui && npm install && npm run build
+cd src/asket_gui && npm install && npm run build   # first
+cd ../.. && colcon build --symlink-install         # then this
 ```
+
+`gui_backend/setup.py` collects the built frontend from `gui_backend/static/`
+while it runs. Build the workspace first and there is nothing there to collect,
+so colcon installs an empty static directory and the backend answers 503 with a
+message about npm — which reads as "the frontend was never built" rather than
+"it was built in the wrong order". If you have already built in the wrong
+order, build the frontend and then rebuild the package:
+
+```bash
+colcon build --symlink-install --packages-select gui_backend
+```
+
+`setup.py` now prints a loud warning during `colcon build` when there is
+nothing to install, so the mistake surfaces where it is made.
 
 ## The design decision that matters
 

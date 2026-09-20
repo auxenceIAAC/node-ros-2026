@@ -160,3 +160,78 @@ def test_the_server_measures_round_trip_time(client):
         ws.receive_json()
         ping = receive_until(ws, lambda m: m["type"] == "ping")
         ws.send_json({"type": "pong", "id": ping["id"]})
+
+
+# -- serving the frontend out of a --symlink-install workspace -------------
+#
+# On the first Jetson deployment the page loaded with the right title and an
+# empty <div id="root">. `colcon build --symlink-install` installs the built
+# frontend as symlinks into build/, and StaticFiles' traversal guard refuses
+# any path that resolves outside the directory it was given, so every asset was
+# a 404 while `/` kept serving index.html. A blank page with a 200 on it.
+
+
+def _built_frontend(root, *, symlinked: bool):
+    """A static dir shaped like colcon's, either copied or symlinked."""
+    real = root / "real"
+    (real / "assets").mkdir(parents=True)
+    (real / "index.html").write_text(
+        '<html><head><title>Asket</title></head>'
+        '<body><div id="root"></div><script src="/assets/index.js"></script></body></html>'
+    )
+    (real / "assets" / "index.js").write_text("console.log('asket');")
+    (real / "assets" / "index.css").write_text("body{}")
+
+    if not symlinked:
+        return real
+
+    installed = root / "installed"
+    (installed / "assets").mkdir(parents=True)
+    (installed / "index.html").symlink_to(real / "index.html")
+    for name in ("index.js", "index.css"):
+        (installed / "assets" / name).symlink_to(real / "assets" / name)
+    return installed
+
+
+@pytest.mark.parametrize("symlinked", [False, True], ids=["copied", "symlink-install"])
+def test_the_assets_are_served_however_colcon_installed_them(tmp_path, symlinked):
+    static = _built_frontend(tmp_path, symlinked=symlinked)
+    hub = Hub(SimSource(SimWorld(WorldConfig()), time_scale=20.0), tick_hz=50.0)
+    app = create_app(hub, static_dir=str(static), tiles_path=None)
+
+    with TestClient(app) as c:
+        assert c.get("/").status_code == 200
+        for asset in ("/assets/index.js", "/assets/index.css"):
+            response = c.get(asset)
+            assert response.status_code == 200, (
+                f"{asset} is a 404 — index.html still serves, so the page loads "
+                "blank with a 200 on it, which reads like a broken app rather "
+                "than a broken install"
+            )
+
+
+def test_a_readable_frontend_reports_no_problems(tmp_path):
+    from gui_backend.core.server import check_static_dir
+
+    assert check_static_dir(_built_frontend(tmp_path, symlinked=True)) == []
+
+
+def test_a_dangling_asset_is_reported_rather_than_served_blank(tmp_path):
+    """The case that is worse than a missing frontend, because it looks like
+    the application started."""
+    from gui_backend.core.server import check_static_dir
+
+    static = _built_frontend(tmp_path, symlinked=True)
+    (tmp_path / "real" / "assets" / "index.js").unlink()   # build/ cleaned out
+
+    problems = check_static_dir(static)
+    assert problems, "a dangling asset symlink was not reported"
+    assert "index.js" in problems[0]
+
+
+def test_a_frontend_that_was_never_built_says_which_command_to_run(tmp_path):
+    from gui_backend.core.server import check_static_dir
+
+    (tmp_path / "empty").mkdir()
+    problems = check_static_dir(tmp_path / "empty")
+    assert problems and "npm run build" in problems[0]
