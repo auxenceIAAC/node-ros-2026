@@ -52,8 +52,55 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN usermod -aG dialout root
 
+# Python packages with no rosdep keys, needed wherever this workspace RUNS.
+#
+# These are not optional extras: gui_backend is a FastAPI application and will
+# not import without them, so a container built without them starts the launch
+# file and then fails the one node the GUI exists for. They were previously
+# only in the devcontainer's postCreateCommand, which Podman never runs, so
+# every `podman build` produced an image that could not serve the GUI and said
+# so only at launch time.
+RUN pip install --break-system-packages --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    websockets \
+    pyserial \
+    pyyaml
+
 # --- Dev target: workspace is bind-mounted, used by devcontainer ---------------
 FROM base AS dev
+
+# Node, for building the GUI frontend.
+#
+# Ubuntu's `nodejs` is 18 and Vite asks for 20+; it builds anyway but warns,
+# and warnings that are always there stop being read. NodeSource 20 is pinned
+# so the container is usable as built rather than after a manual install that
+# vanishes on exit.
+#
+#     cd src/asket_gui && npm install && npm run build   # BEFORE colcon build
+#
+# That order matters: gui_backend/setup.py collects the built frontend while it
+# runs, so building the workspace first installs an empty static directory.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl gnupg \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# The rest of the devcontainer's postCreateCommand, which Podman never runs.
+RUN pip install --break-system-packages --no-cache-dir \
+    "numpy<2" \
+    onnxruntime \
+    opencv-python-headless \
+    rplidar-roboticia \
+    simple-pid \
+    scikit-learn
+
 RUN echo "source /opt/ros/jazzy/setup.bash" >> /etc/bash.bashrc && \
     echo '[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash' >> /etc/bash.bashrc
 WORKDIR /workspace
