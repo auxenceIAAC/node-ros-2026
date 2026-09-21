@@ -28,6 +28,7 @@ from asket_common.heading import (
 from . import adapters, payloads
 from .commands import (
     CMD_CUT_PROPULSION,
+    CMD_RUN_SYSTEM_TEST,
     CMD_SET_MODE,
     CMD_SET_PING_PARAMETERS,
     CMD_START_MISSION,
@@ -270,6 +271,19 @@ class RosSource:
                 cursor=len(self._track),
             )
 
+        if stream == "diagnostics":
+            # The Pre-flight panel's only source of data.
+            #
+            # This branch did not exist, so `snapshot("diagnostics")` returned
+            # None on every tick and the panel read "No pre-flight has run yet
+            # in this session" forever — including right after a boot pre-flight
+            # that had run, logged its verdict, and published this very message.
+            msg = self._msg("preflight_report")
+            if msg is None:
+                return None
+            report = adapters.preflight_from_ros(msg)
+            return Sample(stream, report["run_utc_ms"] or self.now_utc_ms(), report)
+
         if stream == "coverage":
             step = {"full": 1, "reduced": 3, "minimal": 10}[detail]
             side = (self.config.get("survey") or {}).get("sonar_side", "starboard")
@@ -374,6 +388,26 @@ class RosSource:
 
         if name == CMD_STOP_MISSION:
             return self._call_service("stop_mission", lambda req: None)
+
+        if name == CMD_RUN_SYSTEM_TEST:
+            # The service and its client already existed — `topics.yaml` names
+            # it and `_prepare_commands()` builds the client — and this branch
+            # was simply missing, so the button fell through to "not wired up"
+            # on every press.
+            #
+            # `include_active` is hard false and the consent token stays empty.
+            # Active tests turn motors; they need a consent token and somebody
+            # standing next to the boat, and this panel says in as many words
+            # that it does not offer them. Passing the flag through from the
+            # client would make that promise a client-side one.
+            return self._call_service(
+                "run_system_test",
+                lambda req: (
+                    setattr(req, "only", [str(s) for s in (args.get("only") or [])]),
+                    setattr(req, "include_active", False),
+                    setattr(req, "consent_token", ""),
+                ),
+            )
 
         return CommandOutcome(False, f"command {name!r} is not wired up")
 

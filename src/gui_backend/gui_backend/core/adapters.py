@@ -391,6 +391,53 @@ def _nearest(ranges, angle_min_deg, increment_deg):
     return best
 
 
+#: ``SystemTestItem`` status constants, as the message defines them.
+#: Mapped by name rather than by index arithmetic, for the same reason the
+#: Pico's mode numbering is: the two scales are allowed to diverge, and an
+#: off-by-one would turn a FAIL into a WARN on screen.
+_PREFLIGHT_STATUS = {0: "PASS", 1: "WARN", 2: "FAIL", 3: "SKIPPED"}
+
+
+def preflight_from_ros(msg) -> dict:
+    """``asket_interfaces/SystemTestReport`` into the diagnostics payload.
+
+    The shape must match what ``SimSource`` sends for the same stream, which is
+    ``system_test.core.checks.Report.to_dict()`` — the panel is one component
+    and cannot be asked to read two dialects.
+
+    ``history`` is ``None`` rather than an empty summary. The drift history
+    lives in ``system_test_node``'s ``PreflightHistory`` and is not on the wire,
+    so the honest answer is "not available" and not "nothing is degrading",
+    which is a claim this side cannot make. The panel renders a missing history
+    as no drift warnings, which is correct for an unknown.
+    """
+    items = []
+    for item in msg.items:
+        value = float(item.measured_value)
+        items.append(
+            {
+                "id": item.id,
+                "name": item.name,
+                "status": _PREFLIGHT_STATUS.get(int(item.status), "SKIPPED"),
+                "message": item.message,
+                "remedy": item.remedy,
+                # NaN is how the checks say "no number here". JSON has no NaN,
+                # and null is what it meant anyway.
+                "measured_value": None if math.isnan(value) else value,
+                "units": item.units,
+                "active": bool(item.active),
+            }
+        )
+    return {
+        "go": bool(msg.go),
+        "summary": msg.summary,
+        "run_utc_ms": int(msg.run_utc_ms),
+        "duration_s": float(msg.duration_s),
+        "items": items,
+        "history": None,
+    }
+
+
 def sonar_from_ros(msg):
     """Adapt ``asket_interfaces/SonarStatus`` into the health record shape."""
     from omniscan_bridge.core.status import SonarHealth

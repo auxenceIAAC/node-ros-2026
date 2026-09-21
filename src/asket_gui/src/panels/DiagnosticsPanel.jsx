@@ -1,6 +1,7 @@
 import { Chip, Panel } from '../components/Panel.jsx';
 import { ConfirmButton } from '../components/ConfirmButton.jsx';
 import { streamPayload } from '../lib/connection.js';
+import { COMMAND_STATUS_LABELS } from '../lib/labels.js';
 
 /**
  * Pre-flight built-in test.
@@ -20,9 +21,32 @@ const STATUS_LABEL = { PASS: 'ok', WARN: 'warn', FAIL: 'fail', SKIPPED: 'unknown
 
 export function DiagnosticsPanel({ state, connection }) {
   const report = streamPayload(state, 'diagnostics');
-  const pending = Object.values(state.commands).some(
-    (c) => c.name === 'run_system_test' && c.status === 'pending',
-  );
+
+  // The most recent press, whatever became of it.
+  //
+  // This panel used to render only `report`, so a command that failed left no
+  // trace on screen at all: the button's pending state went true and false in
+  // the same breath and the panel sat exactly as before. On the Jetson the
+  // command failed every time — `run_system_test` was never dispatched by
+  // RosSource — and the operator's evidence for that was nothing whatsoever.
+  //
+  // A button that produces no visible outcome is the same silence that has
+  // cost this project hours three times over. It now always resolves to
+  // something: a verdict, a refusal, or "the vessel never answered".
+  const lastRun = Object.values(state.commands)
+    .filter((c) => c.name === 'run_system_test')
+    .sort((a, b) => (a.issued_utc_ms || 0) - (b.issued_utc_ms || 0))
+    .pop();
+  const pending = lastRun?.status === 'pending';
+
+  // A report that predates the press has not answered it. Saying "GO" from a
+  // report taken before the button was touched would be the panel answering a
+  // question nobody asked.
+  const answered =
+    lastRun
+    && lastRun.status !== 'pending'
+    && report
+    && report.run_utc_ms >= (lastRun.issued_utc_ms || 0);
 
   const items = report?.items || [];
   const degrading = report?.history?.degrading || [];
@@ -72,6 +96,21 @@ export function DiagnosticsPanel({ state, connection }) {
               onConfirm={() => connection.command('run_system_test', {})}
             />
           </div>
+          {lastRun && !answered && (
+            <p
+              className={lastRun.status === 'failed' ? 'errline' : 'hint'}
+              style={{ margin: '6px 0 0' }}
+            >
+              {COMMAND_STATUS_LABELS[lastRun.status] || lastRun.status}
+              {lastRun.detail ? ` — ${lastRun.detail}` : ''}
+              {/* Accepted, and then nothing came back. The request reached the
+                  vessel and no fresh report followed, which is a different
+                  fault from a refusal and sends you somewhere different. */}
+              {lastRun.status === 'confirmed' && !report
+                ? ' — the request was sent, but no report has arrived'
+                : ''}
+            </p>
+          )}
         </>
       }
     >

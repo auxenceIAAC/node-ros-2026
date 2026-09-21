@@ -75,9 +75,17 @@ sources:
     topic: /mission/state
     type: asket_interfaces/msg/MissionState
     optional: true
-  diagnostics:
-    topic: /diagnostics
-    type: diagnostic_msgs/msg/DiagnosticArray
+  # The pre-flight report, as system_test_node publishes it.
+  #
+  # This used to point at /diagnostics (diagnostic_msgs/DiagnosticArray), which
+  # is a different thing entirely: that topic is the ROS-wide node-health bus,
+  # and system_test_node *subscribes* to it to check which nodes are present.
+  # It carries no GO/NO-GO verdict, no remedies and no check ids, so the Pre-
+  # flight panel could never have been populated from it. Nothing consumed the
+  # entry either way, so nothing complained.
+  preflight_report:
+    topic: /system_test/report
+    type: asket_interfaces/msg/SystemTestReport
 
 # Where commands go. Mode requests reach the Pico through pico_bridge, which
 # this repository does not modify, so the interface is named here.
