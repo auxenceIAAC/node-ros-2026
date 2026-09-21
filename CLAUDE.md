@@ -76,8 +76,17 @@ npm run dev:mock                                # the GUI alone, nothing else in
 npm run build                                   # into gui_backend/gui_backend/static/
 
 python3 -m gui_backend.core.app --sim                # GUI + simulated backend
+python3 -m gui_backend.core.app --sim --healthy      # ...and a vessel that is working
 python3 -m gui_backend.core.app --sim --shape-link   # ...on a genuinely narrow link
 ```
+
+**Start with `--healthy`, or the dev panel's "Everything working".** The
+simulator's default is MANUAL, disarmed and not recording, which is correct and
+looks exactly like a broken vessel: four panels have nothing to say. The
+baseline puts it autonomous, armed, recording and pre-flighted, through the
+same commands an operator would use. Nobody can judge whether a degraded state
+reads correctly without having seen the healthy one, and until recently the
+healthy one had never been assembled.
 
 There are three ways to run this, in increasing order of what has to be
 installed:

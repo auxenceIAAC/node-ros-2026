@@ -513,6 +513,42 @@ class SimSource:
             "mounting": self._mounting_provenance.to_dict(),
         }
 
+    def bring_up_healthy(self, mission_name: str = "demo") -> dict:
+        """Put the simulated vessel into a plausibly working state, at once.
+
+        Every panel on this GUI renders absence gracefully, which is correct and
+        is also why a freshly started simulator looks so much like a broken one:
+        the vessel is in MANUAL and disarmed, nothing is recording, and no
+        pre-flight has run, so three panels read "not sent" and a fourth says no
+        report exists. Nothing is wrong. It just does not look like anything.
+
+        That matters more than convenience. Nobody can judge whether a
+        *degraded* state reads correctly without knowing what the healthy one
+        looks like, and until now the healthy one had never been assembled —
+        every default view of this interface has been a partial one.
+
+        So this is the baseline: autonomous and armed, recording, surveying,
+        pre-flight run. It uses the ordinary command path rather than reaching
+        into the world, so what it produces is what an operator pressing the
+        same three buttons would get, and it cannot drift into being a picture
+        the real controls cannot reach.
+
+        Returns what happened, so a caller can print it rather than assume it.
+        """
+        steps: dict[str, str] = {}
+
+        mode = self.send_command(CMD_SET_MODE, {"mode": "AUTONOMOUS"})
+        steps["mode"] = mode.detail if mode.accepted else f"REFUSED: {mode.detail}"
+
+        recording = self.send_command(CMD_START_MISSION, {"name": mission_name})
+        steps["recording"] = (
+            recording.detail if recording.accepted else f"REFUSED: {recording.detail}"
+        )
+
+        report = self.run_preflight()
+        steps["preflight"] = report.summary
+        return steps
+
     def run_preflight(self, only=None):
         report = run_checks(
             self._preflight_state(), only=only, run_utc_ms=self.world.utc_ms

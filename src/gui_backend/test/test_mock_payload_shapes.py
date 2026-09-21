@@ -240,3 +240,73 @@ def test_the_mock_and_the_simulator_agree_there_is_one_relay():
     # And the summary says what it is rather than counting to one.
     assert "relays closed" not in got["summary"], got["summary"]
     assert "ESC power" in got["summary"], got["summary"]
+
+
+def test_the_mock_can_reach_the_same_healthy_baseline_as_the_backend():
+    """The dev panel's "Everything working" button, driven under Node.
+
+    Two baselines that drifted apart would be worse than one: a reviewer would
+    sign off in mock mode on a picture the backend never produces. So the mock
+    runs the same three commands, and is asserted to arrive at the same place —
+    autonomous, armed, recording, GO, nothing failing.
+
+    `SimSource.bring_up_healthy()` is the backend half, covered by
+    test_healthy_baseline.py.
+    """
+    script = textwrap.dedent(
+        f"""
+        const base = '{GUI}/src/lib/mock';
+        const {{ MockWorld }} = await import(base + '/world.js');
+        const {{ MockTransport }} = await import(base + '/mockTransport.js');
+        const P = await import(base + '/payloads.js');
+
+        const world = new MockWorld();
+        const transport = new MockTransport(world, {{ timeScale: 1 }});
+
+        // The transport opens on the next turn of the event loop and starts
+        // its own ticker. Wait for that, then stop it: this test drives the
+        // world itself so it does not depend on wall-clock timing.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        clearInterval(transport.timer);
+
+        for (let i = 0; i < 600; i += 1) world.step(0.05);
+
+        // Exactly what MockControls' "Everything working" button issues.
+        for (const [name, args] of [
+          ['set_mode', {{ mode: 'AUTONOMOUS' }}],
+          ['start_mission', {{ name: 'demo' }}],
+          ['run_system_test', {{}}],
+        ]) {{
+          transport.send(JSON.stringify({{ type: 'command', id: name, name, args }}));
+          for (let i = 0; i < 40; i += 1) world.step(0.05);
+        }}
+
+        const pico = P.picoPayload(world, 'full');
+        const report = transport.lastReport;
+        console.log(JSON.stringify({{
+          mode: pico.mode,
+          armed: pico.armed,
+          arming_block: pico.arming_block,
+          mission: world.missionState,
+          go: report ? report.go : null,
+          checks: report ? report.items.length : 0,
+          failing: report
+            ? report.items.filter((i) => i.status === 'FAIL').map((i) => i.id)
+            : null,
+        }}));
+        transport.close();
+        """
+    )
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True, capture_output=True, text=True, timeout=60,
+    ).stdout
+    got = json.loads(out)
+
+    assert got["mode"] == "AUTONOMOUS", got
+    assert got["armed"] is True, got
+    assert got["arming_block"] is None, got
+    assert got["mission"] == "RECORDING", got
+    assert got["go"] is True, got
+    assert got["checks"] > 0, "a GO with no checks behind it is not a GO"
+    assert got["failing"] == [], got["failing"]

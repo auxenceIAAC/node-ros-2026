@@ -33,6 +33,22 @@ export function MockControls({ connection, open, onOpenChange }) {
     redraw();
   };
 
+  // The one control that is not a toggle: a sequence, run through the ordinary
+  // command path so that what it produces is what pressing the same buttons
+  // produces. Mirrors SimSource.bring_up_healthy() in the backend.
+  const bringUpHealthy = () => {
+    for (const group of SCENARIOS) {
+      for (const item of group.items) {
+        if (item.kind === 'fault' && world.hasFault(item.id)) world.setFault(item.id, false);
+      }
+    }
+    connection.setProfile('auto');
+    connection.command('set_mode', { mode: 'AUTONOMOUS' });
+    connection.command('start_mission', { name: 'demo' });
+    connection.command('run_system_test', {});
+    redraw();
+  };
+
   const toggle = (id) => {
     if (id === 'confirm_slow') {
       world.confirmDelayS = world.confirmDelayS > 1 ? 0.6 : 2.5;
@@ -46,6 +62,7 @@ export function MockControls({ connection, open, onOpenChange }) {
   };
 
   const isOn = (item) => {
+    if (item.kind === 'action') return false;
     if (item.kind === 'fault') return world.hasFault(item.id);
     if (item.kind === 'profile') {
       return item.id === 'auto'
@@ -61,6 +78,7 @@ export function MockControls({ connection, open, onOpenChange }) {
   const act = (item) => {
     if (item.kind === 'fault') toggleFault(item.id);
     else if (item.kind === 'profile') setProfile(item.id);
+    else if (item.kind === 'action') bringUpHealthy();
     else toggle(item.id);
   };
 

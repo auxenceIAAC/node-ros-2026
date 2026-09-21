@@ -7,6 +7,28 @@
 
 export const SCENARIOS = [
   {
+    group: 'Baseline',
+    items: [
+      {
+        id: 'healthy',
+        label: 'Everything working',
+        kind: 'action',
+        detail:
+          'Autonomous and armed, recording, surveying, pre-flight run, every fault '
+          + 'cleared. What a good day looks like.\n\n'
+          + 'This exists because the default view is not it: a freshly started '
+          + 'simulator sits in MANUAL, disarmed and idle, so three panels read "not '
+          + 'sent" and the pre-flight says no report exists. Nothing is wrong — but '
+          + 'it is indistinguishable from a vessel that is off, and nobody can judge '
+          + 'whether a DEGRADED state reads correctly without having seen the healthy '
+          + 'one first.\n\n'
+          + 'It presses the same buttons an operator would, so it cannot show you a '
+          + 'picture the real controls cannot reach. The backend has the same thing: '
+          + 'python3 -m gui_backend.core.app --sim --healthy',
+      },
+    ],
+  },
+  {
     group: 'Link',
     items: [
       {

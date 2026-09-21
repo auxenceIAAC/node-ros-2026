@@ -18,8 +18,35 @@ npm install
 npm run dev:mock          # http://localhost:5173
 ```
 
-That is the whole setup. No ROS 2, no backend process, no Jetson, no hardware,
-no internet. Everything on screen is generated in the browser.
+That is the whole setup — Node and nothing else. No ROS 2, no backend process,
+no Jetson, no hardware, no internet, no `colcon build`. Everything on screen is
+generated in the browser. Verified: `node --version` 22, `npm install`,
+`npm run dev:mock`, open the URL it prints.
+
+### Start here: press "Everything working"
+
+The dev panel is the third column, on the right, and it only exists in mock
+mode. Its first control, under **Baseline**, is **Everything working**.
+
+Press it before anything else. A freshly started simulator sits in MANUAL,
+disarmed and idle, so three panels read "not sent" and the pre-flight says no
+report exists — nothing is wrong, and it is indistinguishable from a vessel
+that is switched off. That button puts the boat autonomous, armed, recording
+and pre-flighted, which is what a good day looks like.
+
+It matters in that order. Every other control on the panel makes something
+*worse*, and you cannot tell whether a degraded state reads correctly without
+having seen the healthy one first.
+
+The backend has the same baseline, through the same three commands:
+
+```bash
+python3 -m gui_backend.core.app --sim --healthy    # http://localhost:8080
+```
+
+That one needs Python and the GUI packages on `PYTHONPATH`, but still no ROS
+and no boat. Use it when you want the real payload builders and the real
+WebSocket rather than the browser mock.
 
 **Mock mode is permanent, not a throwaway.** It is how the interface gets
 developed and reviewed without taking the vessel out.

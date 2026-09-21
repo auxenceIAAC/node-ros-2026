@@ -33,10 +33,14 @@ def build_app(
     shape_link: bool = False,
     tile_cache_path: str | None = None,
     online_tiles: bool = True,
+    healthy: bool = False,
 ):
     cfg = WorldConfig(seed=seed)
     cfg.vessel.heading_source = heading_source
     source = SimSource(SimWorld(cfg), time_scale=time_scale)
+    if healthy:
+        for step, detail in source.bring_up_healthy().items():
+            print(f"  {step:<10} {detail}")
     hub = Hub(source)
     return create_app(
         hub,
@@ -76,6 +80,15 @@ def main(argv: list[str] | None = None) -> int:
                     choices=["magnetometer", "gnss_compass"])
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument(
+        "--healthy", action="store_true",
+        help=(
+            "open with the vessel autonomous, armed, recording and pre-flighted "
+            "— what a fully working system looks like. Without it the simulator "
+            "starts in MANUAL, disarmed and idle, which is correct and looks "
+            "identical to a broken one."
+        ),
+    )
+    ap.add_argument(
         "--shape-link",
         action="store_true",
         help=(
@@ -95,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         heading_source=args.heading_source,
         seed=args.seed,
         shape_link=args.shape_link,
+        healthy=args.healthy,
     )
     print(f"Asket mission GUI (simulated) on http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
