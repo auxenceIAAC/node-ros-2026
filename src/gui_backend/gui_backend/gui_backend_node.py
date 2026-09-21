@@ -42,6 +42,14 @@ class GuiBackendNode(Node):
         self.declare_parameter("topics_config", "")
         self.declare_parameter("link_profiles_config", "")
         self.declare_parameter("tiles_path", "/data/maps/survey.mbtiles")
+        # Where downloaded tiles are kept. One SQLite file, so it can be copied
+        # to another machine or kept between deployments — a cache from a
+        # previous survey is a basemap that is already there at first boot.
+        self.declare_parameter("tile_cache_path", "/data/maps/tile-cache.sqlite")
+        # Set false to restore the pre-internet behaviour: offline file and
+        # coordinate grid only, nothing fetched. This is the switch to use if a
+        # tile provider ever asks us to stop.
+        self.declare_parameter("online_tiles", True)
         self.declare_parameter("static_dir", str(DEFAULT_STATIC))
         self.declare_parameter("tick_hz", 20.0)
 
@@ -64,6 +72,8 @@ class GuiBackendNode(Node):
             self.hub,
             static_dir=self.get_parameter("static_dir").value,
             tiles_path=self.get_parameter("tiles_path").value or None,
+            tile_cache_path=self.get_parameter("tile_cache_path").value or None,
+            online_tiles=bool(self.get_parameter("online_tiles").value),
             ping_interval_s=float(profiles.get("ping_interval_s", 2.0)),
         )
 

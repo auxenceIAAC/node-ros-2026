@@ -27,19 +27,22 @@ Server to client::
 from __future__ import annotations
 
 import asyncio
+import gzip
 import logging
 import time
 import uuid
+import zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .hub import ClientSession, Hub
 from .shaper import LinkShaper
-from .tiles import MBTiles
+from .tile_cache import TileCache, UpstreamTiles
+from .tiles import MBTiles, TileService
 
 #: How often the server measures each client's round trip. This is the number
 #: automatic profile selection runs on, so it must not be so rare that a link
@@ -83,23 +86,62 @@ def check_static_dir(static: Path) -> list[str]:
     return problems
 
 
+#: The GUI tells the server which link profile it is on, so the server can
+#: decide whether a tile is worth the bandwidth. A header rather than a query
+#: parameter on purpose: putting it in the URL would change every tile URL when
+#: the profile changes, and MapLibre would re-request the whole viewport at the
+#: exact moment the link is worst.
+PROFILE_HEADER = "X-Asket-Profile"
+
+
+def _decode(data: bytes, encoding: str) -> bytes:
+    """Undo a content encoding for a client that cannot take it."""
+    try:
+        if encoding.lower() == "gzip":
+            return gzip.decompress(data)
+        if encoding.lower() == "deflate":
+            return zlib.decompress(data)
+    except (OSError, zlib.error):
+        # Undecodable is not fatal: hand the bytes over labelled as they are
+        # and let the client decide. Failing the request would take the map
+        # down over one tile.
+        return data
+    return data
+
+
 def create_app(
     hub: Hub,
     static_dir: str | Path | None = None,
     tiles_path: str | Path | None = None,
     ping_interval_s: float = PING_INTERVAL_S,
     shape_link: bool = False,
+    tile_cache_path: str | Path | None = None,
+    online_tiles: bool = True,
+    tile_cache_max_bytes: int | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         hub.start()
         yield
         await hub.stop()
+        # Leave one file behind rather than a database and a write-ahead log,
+        # so the tile cache can be copied to another machine or kept for the
+        # next deployment — which is the cheapest answer to "what if there is
+        # no signal at the launch point".
+        app.state.tile_service.cache.checkpoint()
 
     app = FastAPI(title="Asket Mission GUI", version="0.1.0", lifespan=lifespan)
     tiles = MBTiles(tiles_path)
+    cache_kwargs = {} if tile_cache_max_bytes is None else {"max_bytes": tile_cache_max_bytes}
+    tile_service = TileService(
+        cache=TileCache(tile_cache_path, **cache_kwargs),
+        upstream=UpstreamTiles(),
+        mbtiles=tiles,
+        online=online_tiles,
+    )
     app.state.hub = hub
     app.state.tiles = tiles
+    app.state.tile_service = tile_service
 
     # -- plain HTTP -------------------------------------------------------
 
@@ -116,27 +158,96 @@ def create_app(
         )
 
     @app.get("/api/tiles/info")
-    async def tiles_info() -> JSONResponse:
-        """Whether there is a usable offline map, and if not, why not.
+    async def tiles_info(request: Request) -> JSONResponse:
+        """Where the map is getting its tiles, and what it is not getting.
 
-        The frontend needs the reason, not just the boolean: "no tiles for this
-        area" and "no tile file at all" call for different actions on a beach.
+        The frontend needs the reasons, not just booleans. "No tile file at
+        all", "the link is too poor to download tiles" and "the tile server is
+        unreachable" call for three different actions on a beach, and the map
+        has to be able to say which one it is rather than going quietly blank.
         """
-        return JSONResponse(tiles.info.to_dict())
+        profile = request.headers.get(PROFILE_HEADER, "")
+        return JSONResponse(tile_service.describe(profile or None))
+
+    def _serve(result, cache_seconds: int, accept_encoding: str = "") -> Response:
+        """One tile, with its encoding and its provenance intact.
+
+        The provenance headers are not debug output. The GUI's standing rule is
+        that it never presents stale data as current, and these are how the map
+        knows whether what it just drew came off the network or out of a cache
+        that may be weeks old.
+
+        The encoding matters just as much. Vector tiles arrive gzipped and are
+        stored that way, so both hops stay cheap — the 4G fetch and the shore
+        link to the operator's laptop. Replaying the bytes without their
+        ``Content-Encoding`` gives a map that renders nothing while every
+        request returns 200, which reads as a styling bug and is not one.
+        """
+        if not result.found:
+            # 204 rather than 404: a missing tile is normal — outside a partial
+            # tile set, above a source's max zoom, or simply not cached yet on a
+            # link too poor to fetch it. A wall of 404s in the browser console
+            # hides the problems that matter.
+            return Response(
+                status_code=204,
+                headers={"X-Asket-Tile-Origin": result.origin},
+            )
+
+        data = result.data
+        encoding = result.content_encoding
+        if encoding and encoding.lower() not in accept_encoding.lower():
+            # A client that cannot take the encoding we hold. Rare — every
+            # browser accepts gzip — but a curl with `--no-compressed` should
+            # get something it can read rather than a binary surprise.
+            data = _decode(data, encoding)
+            encoding = ""
+
+        headers = {
+            "Cache-Control": f"public, max-age={cache_seconds}",
+            "X-Asket-Tile-Origin": result.origin,
+        }
+        if encoding:
+            headers["Content-Encoding"] = encoding
+            # Any cache between here and the browser must key on the encoding,
+            # or one client's gzip is served to another that asked for plain.
+            headers["Vary"] = "Accept-Encoding"
+        if result.age_ms is not None:
+            headers["X-Asket-Tile-Age-Ms"] = str(result.age_ms)
+        return Response(content=data, media_type=result.content_type, headers=headers)
+
+    @app.get("/tiles/source/{source_id}/{z}/{x}/{y}.{ext}")
+    async def source_tile(source_id: str, z: int, x: int, y: int, ext: str,
+                          request: Request) -> Response:
+        """A tile from one of the online sources, or the cache standing in.
+
+        The fetch is synchronous inside ``TileService`` and is handed to a
+        worker thread here: a tile server that has stopped answering must not
+        stall the event loop that is also carrying the boat's telemetry.
+        """
+        profile = request.headers.get(PROFILE_HEADER, "")
+        result = await asyncio.to_thread(
+            tile_service.tile, source_id, z, x, y, profile or None
+        )
+        return _serve(result, 604800, request.headers.get("Accept-Encoding", ""))
+
+    @app.get("/tiles/fonts/{fontstack}/{glyph_range}.pbf")
+    async def glyphs(fontstack: str, glyph_range: str, request: Request) -> Response:
+        """Label glyphs. Without them the map draws geometry and no names."""
+        profile = request.headers.get(PROFILE_HEADER, "")
+        result = await asyncio.to_thread(
+            tile_service.glyphs, fontstack, glyph_range, profile or None
+        )
+        return _serve(result, 604800, request.headers.get("Accept-Encoding", ""))
 
     @app.get("/tiles/{z}/{x}/{y}.{ext}")
     async def tile(z: int, x: int, y: int, ext: str) -> Response:
-        data = tiles.tile(z, x, y)
-        if data is None:
-            # 204 rather than 404: a missing tile inside a partial tile set is
-            # normal, and a wall of 404s in the browser console hides real
-            # problems.
-            return Response(status_code=204)
-        return Response(
-            content=data,
-            media_type=tiles.content_type,
-            headers={"Cache-Control": "public, max-age=604800"},
-        )
+        """The offline ``.mbtiles`` file.
+
+        Unchanged, and still at its original URL. It is a raster layer drawn
+        *beneath* the vector basemap, so where the vector data is missing the
+        offline map shows through rather than leaving a hole.
+        """
+        return _serve(tile_service.mbtile(z, x, y), 604800)
 
     # -- WebSocket --------------------------------------------------------
 

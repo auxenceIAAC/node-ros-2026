@@ -664,6 +664,29 @@ stream at a different topic is a config change.
 The Obstacles panel's raw/filtered toggle is backed by the real pair:
 `scan_raw` against `obstacles/lidar`, which filters beyond 10 m.
 
+## The map
+
+The map has a real basemap — coastline, harbour, place names — rather than the
+coordinate grid it used to draw. The design assumption that there is no
+internet in the field was wrong: Namibia has 4G at the launch point.
+
+Four sources, in order of preference: the Jetson's **tile cache**, the
+**internet**, a local **`.mbtiles`** file, and a **coordinate graticule** when
+there is nothing else. The offline path still works and is still the answer for
+a survey with no coverage.
+
+The basemap is **OpenFreeMap**, not OpenStreetMap's own tile server — theirs
+forbids the caching this needs ("Offline use is not permitted on
+tile.openstreetmap.org"). OpenFreeMap is the same OSM data, keyless, with no
+account and no request limit. **OpenSeaMap** depth contours and navigation
+marks are available as a toggle, off by default.
+
+Tiles are fetched only on a `full` link; below that the map lives on its cache
+and says so. It never presents a cached basemap as live.
+
+`docs/map_tiles.md` has the reasoning, the promises made to those providers,
+and what to do if one of them ever asks us to stop.
+
 ## The firmware, and what depends on it
 
 **The Pico runs `firmware/pico-node_v4/`, and the stack refuses to fly against

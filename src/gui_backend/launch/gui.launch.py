@@ -48,8 +48,25 @@ def generate_launch_description():
             "tiles_path",
             default_value="/data/maps/survey.mbtiles",
             description=(
-                "Offline basemap. Missing is survivable — the map degrades to a "
-                "coordinate grid and says so — but you will not see the coast."
+                "Offline basemap file. Now a fallback: the map prefers the "
+                "cache and then the internet. Missing is survivable."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tile_cache_path",
+            default_value="/data/maps/tile-cache.sqlite",
+            description=(
+                "Where downloaded map tiles are kept, so the map keeps working "
+                "when the link drops. One file — copy it between machines or "
+                "keep it between deployments."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "online_tiles",
+            default_value="true",
+            description=(
+                "Fetch map tiles from the internet (OpenFreeMap, OpenSeaMap; "
+                "keyless). false restores the offline-only behaviour."
             ),
         ),
         DeclareLaunchArgument("use_sim", default_value="false"),
@@ -79,6 +96,8 @@ def generate_launch_description():
                     "topics_config": topics_config,
                     "link_profiles_config": link_config,
                     "tiles_path": LaunchConfiguration("tiles_path"),
+                    "tile_cache_path": LaunchConfiguration("tile_cache_path"),
+                    "online_tiles": LaunchConfiguration("online_tiles"),
                     "static_dir": static_dir,
                 },
                 sim_time,

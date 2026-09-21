@@ -1,8 +1,12 @@
 # gui_backend
 
-FastAPI + WebSocket. Serves the API, the offline map tiles and the built
-frontend from one process on the Jetson — there is no CDN in Namibia and no
-second server to run.
+FastAPI + WebSocket. Serves the API, the map tiles and the built frontend from
+one process on the Jetson — there is no CDN in Namibia and no second server to
+run.
+
+The tile route is also a caching proxy: the browser never talks to a tile
+provider directly, so there is one shared cache on disk, one User-Agent, and
+one place that honours conditional requests. See `docs/map_tiles.md`.
 
 ## Running
 
@@ -12,6 +16,8 @@ Without ROS, against the simulator — this is the development path:
 python3 -m gui_backend.core.app --sim --port 8080
 python3 -m gui_backend.core.app --sim --time-scale 10   # survey faster than real time
 python3 -m gui_backend.core.app --sim --tiles /data/maps/survey.mbtiles
+python3 -m gui_backend.core.app --sim --tile-cache /data/maps/tile-cache.sqlite
+python3 -m gui_backend.core.app --sim --no-online-tiles   # offline behaviour
 ```
 
 With ROS:
@@ -72,7 +78,8 @@ The protocol is documented in [`docs/ws_protocol.md`](../../docs/ws_protocol.md)
 | `core/sim_source.py` | Data from `asket_sim`, in-process, no ROS |
 | `core/ros_source.py` | Data from real topics |
 | `core/adapters.py` | ROS messages → the shapes `payloads` expects |
-| `core/tiles.py` | Offline MBTiles, read with stdlib `sqlite3` |
+| `core/tiles.py` | The basemap source ladder: cache, internet, MBTiles, nothing |
+| `core/tile_cache.py` | The disk cache and the upstream fetcher, stdlib only |
 | `core/server.py` | The FastAPI app |
 
 ## Configuration

@@ -31,6 +31,8 @@ def build_app(
     heading_source: str = "magnetometer",
     seed: int = 1,
     shape_link: bool = False,
+    tile_cache_path: str | None = None,
+    online_tiles: bool = True,
 ):
     cfg = WorldConfig(seed=seed)
     cfg.vessel.heading_source = heading_source
@@ -41,6 +43,8 @@ def build_app(
         static_dir=static_dir or DEFAULT_STATIC,
         tiles_path=tiles_path,
         shape_link=shape_link,
+        tile_cache_path=tile_cache_path,
+        online_tiles=online_tiles,
     )
 
 
@@ -52,6 +56,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--time-scale", type=float, default=1.0,
                     help=">1 runs the simulated survey faster than real time")
     ap.add_argument("--tiles", default=None, help="path to an .mbtiles file")
+    ap.add_argument(
+        "--tile-cache", default=None,
+        help=(
+            "where to keep downloaded map tiles (SQLite). Without it the map "
+            "still works, but every tile is re-fetched and nothing survives a "
+            "link drop."
+        ),
+    )
+    ap.add_argument(
+        "--no-online-tiles", action="store_true",
+        help=(
+            "never fetch map tiles from the internet. The pre-internet "
+            "behaviour: the offline .mbtiles file and the coordinate grid only."
+        ),
+    )
     ap.add_argument("--static", default=None, help="path to the built frontend")
     ap.add_argument("--heading-source", default="magnetometer",
                     choices=["magnetometer", "gnss_compass"])
@@ -70,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     app = build_app(
         time_scale=args.time_scale,
         tiles_path=args.tiles,
+        tile_cache_path=args.tile_cache,
+        online_tiles=not args.no_online_tiles,
         static_dir=args.static,
         heading_source=args.heading_source,
         seed=args.seed,

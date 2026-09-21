@@ -3,7 +3,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useRef, useState } from 'react';
 
 import { coverageRibbon, lidarPoints } from '../lib/geometry.js';
-import { blankStyle, graticule, rasterStyle } from '../lib/mapStyle.js';
+import { blankStyle, buildStyle, graticule } from '../lib/mapStyle.js';
 import { registerMockTileProtocol } from '../lib/mock/tiles.js';
 import { streamPayload } from '../lib/connection.js';
 
@@ -12,17 +12,39 @@ import { streamPayload } from '../lib/connection.js';
  *
  * Vessel, heading, track, planned survey lines, coverage, lidar, geofence.
  *
- * Offline tiles are mandatory — there is no internet in the field. If the
- * .mbtiles file is missing or does not cover the survey area, the map falls
- * back to a coordinate graticule and says so in plain words. It never silently
- * shows an empty rectangle, because an operator would read that as "no map
- * today" rather than "fix the tile file".
+ * THE BASEMAP HAS FOUR SOURCES, in this order of preference: the backend's
+ * tile cache, the internet, a local .mbtiles file, and — when there is none of
+ * those — a coordinate graticule. The ladder is implemented in
+ * gui_backend/core/tiles.py; what happens here is deciding which layers to ask
+ * for and telling the operator, in words, what they are actually looking at.
+ *
+ * It never silently shows an empty rectangle. An operator reads that as "no map
+ * today" rather than "the link dropped" or "fix the tile file", and those call
+ * for three different actions.
  */
 export function MissionMap({ state, connection, follow, onFollowChange, showRawLidar = false }) {
   const container = useRef(null);
   const map = useRef(null);
   const [tiles, setTiles] = useState(null);
   const [ready, setReady] = useState(false);
+  //: The sea-mark overlay is off by default. It is the most useful layer here
+  //: for a survey, and it is also somebody else's volunteer data that lags the
+  //: real world — so it is opt-in, and labelled when it is on.
+  const [seamark, setSeamark] = useState(false);
+  //: Which sources the style is built from. The map is rebuilt only when this
+  //: changes, not on every poll, or it would tear down and recreate itself
+  //: every twenty seconds in the middle of a survey.
+  const [styleKey, setStyleKey] = useState(null);
+  //: The latest tile status, read by the map-creation effect without being in
+  //: its dependencies.
+  const tilesRef = useRef(null);
+  //: The link profile, read inside transformRequest. A ref because the
+  //: callback is installed once and the profile changes under it.
+  const profileRef = useRef('full');
+  profileRef.current = state.profile?.profile || 'full';
+  //: Camera carried across a style rebuild, so a link recovering mid-survey
+  //: does not throw the operator back to the default view.
+  const restoreCamera = useRef(null);
   //: The survey box is framed once, when the plan first arrives. Opening on a
   //: fixed zoom put a 300 m survey on screen as a 30 px smudge, which is not a
   //: map anyone can judge coverage from. Once only: re-framing under an
@@ -37,39 +59,86 @@ export function MissionMap({ state, connection, follow, onFollowChange, showRawL
 
   // -- tile availability ------------------------------------------------
 
+  // Polled rather than asked once. The answer changes during a mission: the
+  // link drops, the cache fills, the profile suspends fetching. A map that
+  // decided at startup what it could show would be describing a link that no
+  // longer exists.
   useEffect(() => {
     let cancelled = false;
-    connection
-      .fetchTileInfo()
-      .then((info) => !cancelled && setTiles(info))
-      .catch(() =>
-        !cancelled &&
-        setTiles({ available: false, message: 'Could not ask about map tiles.' }),
-      );
+    let timer = null;
+
+    const poll = async () => {
+      let info;
+      try {
+        info = await connection.fetchTileInfo();
+      } catch {
+        info = { error: 'Could not ask the backend about map tiles.' };
+      }
+      if (cancelled) return;
+      tilesRef.current = info;
+      setTiles(info);
+      const key = styleSignature(info, seamark, connection.isMock);
+      setStyleKey((previous) => (previous === key ? previous : key));
+
+      // No point polling on a beacon link: tile fetching is suspended there
+      // anyway, the answer cannot change, and the poll itself is bandwidth the
+      // telemetry wants.
+      const idle = profileRef.current === 'minimal' ? null : 20000;
+      if (idle) timer = setTimeout(poll, idle);
+    };
+
+    poll();
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
-  }, [connection, state.tileGeneration]);
+  }, [connection, state.tileGeneration, seamark]);
 
   // -- map creation -----------------------------------------------------
 
   useEffect(() => {
-    if (!container.current || tiles === null || map.current) return;
+    if (!container.current || styleKey === null || map.current) return;
+
+    const info = tilesRef.current || {};
+    const sources = availableSources(info, seamark, connection.isMock);
 
     // In mock mode the tiles are generated in the browser through a custom
-    // protocol, so the tiled rendering path can be reviewed with no .mbtiles
-    // file and no internet.
+    // protocol, so the tiled rendering path can be reviewed with no backend,
+    // no .mbtiles file and no internet.
     if (connection.isMock) registerMockTileProtocol(maplibregl);
-    const tileUrl = connection.isMock ? 'mocktiles://{z}/{x}/{y}' : undefined;
+
+    const style = sources.any
+      ? buildStyle({
+          origin: window.location.origin,
+          basemap: sources.basemap,
+          seamark: sources.seamark,
+          mbtiles: sources.mbtiles,
+          mockTileUrl: sources.mock ? 'mocktiles://{z}/{x}/{y}' : '',
+          basemapAttribution: attributionFor(info, 'basemap'),
+          seamarkAttribution: attributionFor(info, 'seamark'),
+        })
+      : blankStyle();
 
     const instance = new maplibregl.Map({
       container: container.current,
-      style: tiles.available ? rasterStyle(tileUrl) : blankStyle(),
-      center: [14.5053, -22.9576],
-      zoom: 14,
-      attributionControl: false,
-      // No glyph server exists offline, so nothing may try to render text from
-      // a font the style would have to fetch.
+      style,
+      center: restoreCamera.current?.center || [14.5053, -22.9576],
+      zoom: restoreCamera.current?.zoom ?? 14,
+      bearing: restoreCamera.current?.bearing ?? 0,
+      // ODbL is a licence, not a preference: OpenStreetMap-derived tiles may
+      // not be shown without attribution. MapLibre collects the strings the
+      // style declares per source, so a layer cannot be added without its
+      // credit coming with it. This used to be switched off.
+      attributionControl: { compact: true },
+      // Tells the backend what the link can afford, so it can decide whether a
+      // tile is worth fetching. A header rather than a query parameter: in the
+      // URL it would change every tile's address the moment the profile
+      // changed, and MapLibre would re-request the whole viewport at exactly
+      // the wrong time.
+      transformRequest: (url) =>
+        url.startsWith(window.location.origin)
+          ? { url, headers: { 'X-Asket-Profile': profileRef.current } }
+          : { url },
       localIdeographFontFamily: false,
     });
     instance.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
@@ -77,17 +146,30 @@ export function MissionMap({ state, connection, follow, onFollowChange, showRawL
     instance.on('dragstart', () => onFollowChange(false));
 
     instance.on('load', () => {
-      addLayers(instance, !tiles.available);
+      addLayers(instance, !sources.any);
       map.current = instance;
       setReady(true);
     });
 
     return () => {
+      // The style is rebuilt when the available sources change, which can
+      // happen mid-survey as the link comes and goes. Carrying the camera
+      // across means the operator does not get thrown back to the default view
+      // because a tile server answered.
+      try {
+        restoreCamera.current = {
+          center: instance.getCenter().toArray(),
+          zoom: instance.getZoom(),
+          bearing: instance.getBearing(),
+        };
+      } catch {
+        // A map that never finished loading has no camera to keep.
+      }
       instance.remove();
       map.current = null;
       setReady(false);
     };
-  }, [tiles, onFollowChange, connection]);
+  }, [styleKey, onFollowChange, connection, seamark]);
 
   // -- data into layers -------------------------------------------------
 
@@ -171,12 +253,17 @@ export function MissionMap({ state, connection, follow, onFollowChange, showRawL
 
   useEffect(() => {
     const instance = map.current;
-    if (!instance || !ready || tiles?.available) return;
+    if (!instance || !ready) return;
+    if (availableSources(tilesRef.current || {}, seamark, connection.isMock).any) return;
     const redraw = () => setData(instance, 'graticule', graticule(instance.getBounds()));
     redraw();
     instance.on('moveend', redraw);
     return () => instance.off('moveend', redraw);
-  }, [ready, tiles]);
+  }, [ready, styleKey, seamark, connection]);
+
+  // Recomputed each render so the controls agree with what is on screen: the
+  // sea-mark toggle is meaningless without a basemap to overlay.
+  const sources = availableSources(tiles || {}, seamark, connection.isMock);
 
   return (
     <div className="map-area">
@@ -198,6 +285,21 @@ export function MissionMap({ state, connection, follow, onFollowChange, showRawL
         >
           Fit survey
         </button>
+        {/* Off by default, and labelled when on: it is the most useful layer
+            here, and it is also volunteer data that lags the real world. */}
+        {!connection.isMock && sources.basemap && (
+          <button
+            onClick={() => setSeamark((on) => !on)}
+            aria-pressed={seamark}
+            title={
+              seamark
+                ? 'Hide depth contours and navigation marks'
+                : 'Show OpenSeaMap depth contours and navigation marks. Not a navigation authority.'
+            }
+          >
+            {seamark ? 'Sea marks on' : 'Sea marks'}
+          </button>
+        )}
       </div>
       {/* Five overlays in five colours is four too many to hold in your head at
           06:00. The legend is small, permanent, and uses the same colours the
@@ -216,28 +318,174 @@ export function MissionMap({ state, connection, follow, onFollowChange, showRawL
       {/* Said once, on the map, rather than stamped across every 256 px tile.
           It still has to be said: a synthetic basemap that looked like a chart
           would be the most dangerous thing this GUI could render. */}
-      {connection.isMock && tiles?.available && (
+      {connection.isMock && (
         <div className="map-note map-note-mock">
           <strong>Synthetic basemap — not a chart.</strong> Generated in this
-          browser so the tiled rendering path can be reviewed with no .mbtiles
-          file and no internet.
+          browser so the tiled rendering path can be reviewed with no backend
+          and no internet.
         </div>
       )}
-      {tiles && !tiles.available && (
-        <div className="map-note">
-          <strong className="warnline">No offline map tiles.</strong> Showing a coordinate
-          grid only. {tiles.message}
-        </div>
-      )}
-      {tiles?.available && tiles.bounds && vessel?.lat &&
-        !withinBounds(tiles.bounds, vessel.lat, vessel.lon) && (
+      {/* What the map is actually showing, in words. The whole point of the
+          source ladder is that "map looks sparse" has several causes which
+          need different actions, and the operator cannot tell them apart by
+          looking. */}
+      {!connection.isMock && <BasemapNote info={tiles} seamark={seamark} />}
+      {tiles?.mbtiles?.available && tiles.mbtiles.bounds && vessel?.lat &&
+        !tiles.online &&
+        !withinBounds(tiles.mbtiles.bounds, vessel.lat, vessel.lon) && (
           <div className="map-note">
-            <strong className="warnline">The vessel is outside the tiled area.</strong> The
-            map will be blank here. Pre-download tiles covering the survey box.
+            <strong className="warnline">The vessel is outside the offline tiled area.</strong> With
+            online tiles switched off the map will be blank here.
           </div>
         )}
     </div>
   );
+}
+
+/**
+ * Which basemap sources are usable right now.
+ *
+ * "Online is configured" is not the same as "online works". A backend with
+ * `online_tiles: true` and a dead 4G modem and an empty cache can render
+ * nothing at all, and if the map believed the configuration it would show a
+ * blank white rectangle — the one thing this panel must never do. So the
+ * basemap counts as usable only when the tile server has actually answered, or
+ * when there is something cached to fall back on.
+ */
+function availableSources(info, seamark, isMock) {
+  // Mock mode has no backend and no internet: the synthetic tiles stand in for
+  // the whole ladder. The dev panel can switch them off, and that has to keep
+  // working — "the map degrades honestly with no tiles" is a behaviour worth
+  // being able to see rather than take on trust.
+  if (isMock) {
+    const available = Boolean(info?.mbtiles?.available);
+    return { any: available, mock: available, basemap: false, seamark: false, mbtiles: false };
+  }
+
+  const cached = (info?.cache?.entries || 0) > 0;
+  const reachable = info?.upstream?.reachable;
+  // reachable === null means "not tried yet": optimistic, because the first
+  // request is what finds out, and a pessimistic default would never try.
+  const basemap = Boolean(info?.online) && (reachable !== false || cached);
+  const mbtiles = Boolean(info?.mbtiles?.available);
+
+  return {
+    any: basemap || mbtiles,
+    mock: false,
+    basemap,
+    seamark: basemap && seamark,
+    mbtiles,
+  };
+}
+
+/** A string that changes only when the style would have to be rebuilt. */
+function styleSignature(info, seamark, isMock) {
+  const s = availableSources(info, seamark, isMock);
+  return [s.mock, s.basemap, s.seamark, s.mbtiles].map(Number).join('');
+}
+
+function attributionFor(info, id) {
+  return (info?.sources || []).find((s) => s.id === id)?.attribution || '';
+}
+
+/**
+ * What the map is showing, and — when it matters — why it is not showing more.
+ *
+ * The rule this exists to keep: the map never presents a cached basemap as if
+ * it were live. A month-old coastline is not the lie a month-old position would
+ * be, but the operator should still be able to tell without having to guess
+ * whether the link is down, the profile has suspended fetching, or there is
+ * simply no map for this place.
+ */
+function BasemapNote({ info, seamark }) {
+  if (!info) return null;
+  if (info.error) {
+    return (
+      <div className="map-note">
+        <strong className="warnline">Cannot reach the backend about map tiles.</strong>{' '}
+        {info.error}
+      </div>
+    );
+  }
+
+  const sources = availableSources(info, seamark, false);
+  const cache = info.cache || {};
+  const upstream = info.upstream || {};
+
+  if (!sources.any) {
+    return (
+      <div className="map-note">
+        <strong className="warnline">No basemap.</strong> Showing a coordinate grid
+        only.{' '}
+        {info.online
+          ? `The tile server is unreachable${upstream.last_error ? ` (${upstream.last_error})` : ''} and nothing is cached yet.`
+          : 'Online tiles are switched off, and there is no offline tile file.'}
+      </div>
+    );
+  }
+
+  // Fetching suspended by the link profile. Not a fault — it is the GUI doing
+  // what it was asked to — so it is said plainly rather than in alarm colours.
+  if (info.online && !info.fetching && info.fetch_suspended_reason) {
+    return (
+      <div className="map-note">
+        <strong>Map paused.</strong> {info.fetch_suspended_reason}
+        {cache.newest_utc_ms ? ` Cached ${describeAge(Date.now() - cache.newest_utc_ms)}.` : ''}
+      </div>
+    );
+  }
+
+  // Online, allowed to fetch, and the network is not answering: everything on
+  // screen is from the cache and may be old.
+  if (info.online && upstream.reachable === false) {
+    return (
+      <div className="map-note">
+        <strong className="warnline">Map is cached, not live.</strong> The tile server
+        is unreachable{upstream.last_error ? ` (${upstream.last_error})` : ''}.{' '}
+        {cache.entries
+          ? `Showing ${cache.entries} stored tiles, newest ${describeAge(Date.now() - (cache.newest_utc_ms || Date.now()))}.`
+          : 'Showing the offline tile file.'}
+      </div>
+    );
+  }
+
+  // The offline file, with no live source behind it. It is a real basemap and
+  // a perfectly good one, but it is a snapshot taken at some point in the past
+  // and it will not show a jetty built since. Saying so costs one line.
+  if (!sources.basemap && sources.mbtiles) {
+    return (
+      <div className="map-note">
+        <strong>Offline basemap.</strong>{' '}
+        {info.online
+          ? 'No tile server reachable, so the map is the pre-downloaded file — '
+          : 'Online tiles are switched off, so the map is the pre-downloaded file — '}
+        a snapshot, not a live map. {info.mbtiles?.message || ''}
+      </div>
+    );
+  }
+
+  if (seamark) {
+    return (
+      <div className="map-note">
+        <strong>Sea marks shown.</strong> OpenSeaMap depth contours and navigation
+        marks. Volunteer-maintained, lags the real world, and is{' '}
+        <strong>not a navigation authority</strong> — do not plan a survey line from it.
+      </div>
+    );
+  }
+
+  return null;
+}
+
+/** "3 minutes ago", for somebody deciding whether to trust what they see. */
+function describeAge(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return 'just now';
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
 }
 
 /** Zoom to the planned survey box plus whatever has been covered so far. */
