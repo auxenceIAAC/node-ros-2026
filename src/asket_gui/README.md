@@ -61,7 +61,7 @@ did not write the GUI can tell whether what they are looking at is right.
 | Sensors | Sonar dropout, heading invalid, GNSS degraded, sonar clock drift, lidar stalled, RC link lost |
 | Resources | Disk full, low battery |
 | Mode commands | Confirmation slow (2.5 s), confirmation never arrives |
-| Map | Offline tiles present / absent |
+| Map | Basemap present / absent |
 | Survey speed | 1× / 4× / 12× — speeds the *vessel*, never the clock |
 | Heading source | Magnetometer vs GNSS compass, to compare seabed error at 50 m |
 
@@ -101,16 +101,31 @@ values that matter, and no low-contrast greys used to carry meaning.
 | 5 — two-step confirmation | `components/ConfirmButton.jsx`. Arm, then confirm; the armed state times out on its own |
 | 7 — data age is always visible | `components/Value.jsx` and `lib/staleness.js`. Stale values are degraded loudly — struck through and red — because nobody notices a slightly different grey in sunlight |
 
-## Offline maps
+## The basemap
 
-There is no internet in the field, so no style, glyph or sprite is fetched from
-a URL. Raster tiles come from the `.mbtiles` file on the Jetson via
-`/tiles/{z}/{x}/{y}.png`.
+There *is* internet in the field — Namibia has 4G at the launch point — so the
+map has a real basemap rather than a coordinate grid. It comes through the
+backend in four steps of preference: the Jetson's tile cache, the internet, a
+local `.mbtiles` file, and a coordinate graticule when there is nothing else.
+`docs/map_tiles.md` has the reasoning, including why the basemap is not
+OpenStreetMap's own tile server.
 
-If that file is missing, or the vessel is outside the area it covers, the map
-draws a **coordinate graticule** and says so in plain words. It never silently
-shows an empty rectangle — an operator would read that as "no map today"
-rather than "fix the tile file".
+No style, glyph or sprite is fetched from a third party by the browser. The
+style is written in `lib/mapStyle.js` and every URL in it points at our own
+backend, so there is one cache and the map works on a laptop with no internet
+of its own.
+
+The basemap is deliberately **grey**. This map carries coverage, planned lines,
+geofence, track, lidar and the vessel in five saturated colours, and a normal
+street map competes with all of them. Land is near-white, water is a
+blue-grey chosen to stay away from the plan's blue, and woodland is grey
+because green is taken. The one exception is the coastline, which gets a
+definite stroke — for a boat it is the most useful line on the map.
+
+When there is no basemap at all the map draws a **coordinate graticule** and
+says so in plain words. It never silently shows an empty rectangle — an
+operator would read that as "no map today" rather than "the link dropped", and
+those need different actions.
 
 The vessel's heading arrow stops rotating and turns red when heading is
 invalid. Pointing an arrow confidently in a direction we do not trust is exactly

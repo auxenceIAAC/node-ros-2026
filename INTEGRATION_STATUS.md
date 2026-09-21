@@ -60,6 +60,8 @@ the Jetson (§5.1).
 | Motor-path exclusivity | **verified** — every argument combination, and checked against a reintroduced collision (§9) |
 | Frontend production build | **verified** — builds into `gui_backend/static/` |
 | Firmware against a real Pico | **NOT VERIFIED** — nothing here has been flashed or run on hardware |
+| Map tiles end to end | **verified** — rendered in a browser against the live tile servers, with attribution, sea marks and all four degraded states (§12) |
+| Tile behaviour on a real degraded link | **NOT VERIFIED** — the profile gate is unit-tested, but nobody has watched it on a fading 4G link |
 | `colcon build --symlink-install` | **NOT VERIFIED** — see §6 |
 | Gazebo end-to-end | **NOT VERIFIED** — see §6 |
 
@@ -596,7 +598,53 @@ Not asked for, found while doing the above, all of them live:
 
 ---
 
-## 12. Branch conflict warning
+## 12. The map has a real basemap now
+
+The map rendered a bare coordinate grid, because the GUI was designed on the
+assumption that there is no internet in the field. There is — Namibia has 4G at
+the launch point and usually from the shore station — so that assumption has
+been replaced. `docs/map_tiles.md` is the full account; the parts that matter
+for a review:
+
+**The basemap is not OpenStreetMap's own tile server**, and the reason is
+theirs, not ours. Their policy says *"Offline use is not permitted on
+tile.openstreetmap.org"*, counts as bulk downloading *"any pre-emptive fetching
+of tiles other than those a user is actively viewing"*, and does not recommend
+caching proxies. The caching this GUI needs would breach all three. So the
+basemap is **OpenFreeMap** — same OSM data, no key, no account, "no limits on
+the number of map views or requests", self-hostable, and serving a ten-year
+cache header. The nautical overlay is **OpenSeaMap**, off by default.
+
+**Four sources, in order:** the Jetson's disk cache, the internet, the existing
+`.mbtiles` file, the coordinate graticule. The offline path still works and is
+still the answer for a survey with no coverage.
+
+**Vector rather than raster**, chosen mostly so the basemap can be muted. This
+map already carries five saturated overlay colours; a normal street map fights
+all of them. It also means a 5 km survey box costs ~20 tiles (~250 kB) instead
+of ~120 (~1.8 MB).
+
+**Tiles are fetched only on a `full` link.** On `reduced` and beacon the map
+lives on its cache and says so. One vector tile is fifteen seconds of a beacon
+budget.
+
+**Attribution was switched off** — `attributionControl: false` — which is an
+ODbL breach the moment any OSM-derived tile renders. It is now on, and each
+source carries its own string.
+
+**One promise worth keeping visible:** nothing pre-fetches. There is no
+seed-the-survey-box function and a test asserts there is no function that looks
+like one. A survey box is twenty tiles; the saving is not worth the habit.
+
+Also worth knowing: **the existing `.mbtiles` fallback may never have been
+producible.** Nothing in the repo says where that file comes from, and the
+obvious method — bulk-downloading from OSM — is what their policy forbids.
+`pmtiles extract` against the Protomaps daily build gives a bbox cutout under
+ODbL without scraping anybody. Not implemented; noted in `docs/map_tiles.md`.
+
+---
+
+## 13. Branch conflict warning
 
 Checked against the club repo at time of writing:
 
@@ -620,7 +668,7 @@ firmware. It is superseded by `firmware/pico-node_v4/`. Do not flash it.
 
 ---
 
-## 13. Also flagged
+## 14. Also flagged
 
 `scripts/deploy-pi.sh` targets `pi@boat.local` and looks stale — this project
 moved to a Jetson. Left untouched: it needs somebody who knows the current

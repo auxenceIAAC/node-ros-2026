@@ -34,6 +34,37 @@ server:
   host: "0.0.0.0"
   port: 8080
   tick_hz: 20.0
-  # Pre-downloaded map tiles for the survey area. There is no internet in the
-  # field; without this the map falls back to a coordinate grid and says so.
+
+  # ---- the map ----------------------------------------------------------
+  #
+  # The basemap has four sources, in this order: the cache below, the internet,
+  # the .mbtiles file, and a coordinate grid. The ladder lives in
+  # gui_backend/core/tiles.py; these are the knobs.
+
+  # Fetch tiles from the internet at all. OpenFreeMap for the basemap,
+  # OpenSeaMap for the nautical overlay — both keyless, no account, and chosen
+  # partly because their terms permit the caching below. Set false to restore
+  # the pre-internet behaviour, and use that if a provider ever asks us to stop.
+  online_tiles: true
+
+  # Where fetched tiles are kept. One SQLite file, so it can be copied to
+  # another machine or kept between deployments: a cache from a survey already
+  # flown is a basemap that is there before the first byte of network.
+  #
+  # Only tiles somebody actually looked at are ever stored. There is no
+  # pre-seeding, deliberately — see the module docstring.
+  tile_cache_path: "/data/maps/tile-cache.sqlite"
+
+  # Evicted least-recently-used above this. A 5 km survey box costs roughly
+  # 20 vector tiles, about 250 kB, so this is generous by three orders of
+  # magnitude and exists only to stop a year of panning filling the disk.
+  tile_cache_max_bytes: 536870912   # 512 MB
+
+  # The offline file. Now a fallback rather than the only source, and still
+  # worth carrying: it is what a survey somewhere with no coverage would use.
+  #
+  # Note on producing one: do NOT bulk-download from tile.openstreetmap.org.
+  # Their policy forbids it in as many words. `pmtiles extract` from the
+  # Protomaps daily OSM build gives a bounding-box cutout under ODbL without
+  # scraping anybody's tile server.
   tiles_path: "/data/maps/survey.mbtiles"

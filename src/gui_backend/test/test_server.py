@@ -30,11 +30,33 @@ def test_health_reports_the_source_and_profile(client):
 
 
 def test_missing_tiles_are_explained_rather_than_merely_absent(client):
-    """On a beach, 'no tile file at all' and 'no tiles for this area' call for
-    different actions."""
+    """On a beach, 'no tile file at all', 'the link is too poor to download
+    tiles' and 'the tile server is unreachable' call for three different
+    actions, so the endpoint reports each separately rather than one boolean."""
     info = client.get("/api/tiles/info").json()
-    assert info["available"] is False
-    assert "coordinate grid" in info["message"]
+    assert info["mbtiles"]["available"] is False
+    assert info["mbtiles"]["message"]
+    assert "cache" in info and "upstream" in info
+    assert isinstance(info["online"], bool)
+
+
+def test_the_tile_endpoint_reports_the_link_profile_back(client):
+    """The map has to be able to say *why* it stopped fetching, and the answer
+    depends on the caller's profile rather than on server state."""
+    full = client.get("/api/tiles/info", headers={"X-Asket-Profile": "full"}).json()
+    beacon = client.get("/api/tiles/info", headers={"X-Asket-Profile": "minimal"}).json()
+
+    assert full["fetching"] is True
+    assert full["fetch_suspended_reason"] == ""
+    assert beacon["fetching"] is False
+    assert "minimal" in beacon["fetch_suspended_reason"]
+
+
+def test_a_tile_says_where_it_came_from(client):
+    """Provenance travels with the bytes. The GUI never presents a cached
+    basemap as live, and this is how it knows which it has."""
+    response = client.get("/tiles/10/511/511.png")
+    assert response.headers["X-Asket-Tile-Origin"] == "miss"
 
 
 def test_a_missing_tile_is_no_content_not_an_error(client):
@@ -60,10 +82,11 @@ def test_tiles_are_served_from_an_mbtiles_file(tmp_path):
 
     hub = Hub(SimSource(SimWorld(WorldConfig())))
     with TestClient(create_app(hub, tiles_path=path, ping_interval_s=0.05)) as client:
-        assert client.get("/api/tiles/info").json()["available"] is True
+        assert client.get("/api/tiles/info").json()["mbtiles"]["available"] is True
         response = client.get("/tiles/10/3/5.png")
         assert response.status_code == 200
         assert response.content == b"\x89PNG-data"
+        assert response.headers["X-Asket-Tile-Origin"] == "mbtiles"
         # And the flip is not accidentally symmetric.
         assert client.get("/tiles/10/3/1018.png").status_code == 204
 

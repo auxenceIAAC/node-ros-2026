@@ -32,23 +32,40 @@ export function createMockConnection(options = {}) {
       Promise.resolve(
         world.mockTilesAvailable
           ? {
-              available: true,
-              name: 'Synthetic test tiles',
-              format: 'png',
-              min_zoom: 0,
-              max_zoom: 22,
-              bounds: null,
-              tile_count: -1,
-              message:
-                'Synthetic tiles generated in the browser. Not a real chart — they ' +
-                'exist so the tiled path can be reviewed without an .mbtiles file.',
+              // The same shape the backend returns, so the map panel has one
+              // contract rather than two. Mock mode has no backend and no
+              // internet, so it reports itself as offline with a local source.
+              online: false,
+              fetching: false,
+              fetch_suspended_reason: '',
+              profile: 'full',
+              sources: [],
+              upstream: { reachable: null, last_error: '', fetches: 0 },
+              cache: { enabled: false, entries: 0, bytes: 0 },
+              mbtiles: {
+                available: true,
+                name: 'Synthetic test tiles',
+                format: 'png',
+                bounds: null,
+                message:
+                  'Synthetic tiles generated in the browser. Not a real chart — they ' +
+                  'exist so the tiled path can be reviewed without a backend.',
+              },
             }
           : {
-              available: false,
-              message:
-                'No offline tile file. The map shows a coordinate grid only. In the ' +
-                'field this is what you get if the .mbtiles for the survey area is ' +
-                'missing from the Jetson.',
+              online: false,
+              fetching: false,
+              fetch_suspended_reason: '',
+              profile: 'full',
+              sources: [],
+              upstream: { reachable: null, last_error: '', fetches: 0 },
+              cache: { enabled: false, entries: 0, bytes: 0 },
+              mbtiles: {
+                available: false,
+                message:
+                  'No basemap. The map shows a coordinate grid only. In the field ' +
+                  'this is what you get with no link, no cache and no .mbtiles file.',
+              },
             },
       ),
   });

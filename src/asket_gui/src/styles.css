@@ -379,16 +379,31 @@ input[type="range"] { accent-color: var(--info-fill); }
 
 .map { position: absolute; inset: 0; }
 
+/* Clear of the attribution bar along the bottom edge. ODbL attribution is a
+   licence condition, so it is the fixed thing and everything else moves around
+   it — a note that covers the credit is not an option. */
 .map-note {
   position: absolute;
   left: 8px;
-  bottom: 8px;
+  bottom: 30px;
   max-width: 420px;
   background: #fff;
   border: 1px solid var(--line);
   padding: 6px 8px;
   font-size: 12px;
+  z-index: 2;
 }
+
+/* MapLibre's own controls, brought into this GUI's flat black-on-white. The
+   attribution has to stay legible against whatever tile is under it. */
+.maplibregl-ctrl-attrib {
+  background: rgba(255, 255, 255, 0.92) !important;
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.maplibregl-ctrl-attrib a { color: var(--ink); }
 
 /* The synthetic-basemap warning: purple like everything else that means
    "none of this is real", and top-left so it is read before the map is. */
@@ -413,10 +428,12 @@ input[type="range"] { accent-color: var(--info-fill); }
 
 /* The map legend. Coverage on one side only is the whole reason this map
    exists, and an operator who cannot name the colours cannot read it. */
+/* Above the scale control, which sits bottom-right and used to print its
+   distance straight through the legend text. */
 .map-legend {
   position: absolute;
   right: 8px;
-  bottom: 34px;
+  bottom: 58px;
   background: #fff;
   border: 1px solid var(--line);
   padding: 5px 8px;
