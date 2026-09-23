@@ -27,25 +27,41 @@ export const DEFAULT_WAVE_HEIGHT_M = 0.5;
 /** Mirrors GLASSY_WAVE_HEIGHT_M in asket_sim/core/link.py. */
 export const GLASSY_WAVE_HEIGHT_M = 0.02;
 
-/** 802.11ax, 80 MHz, one spatial stream. Mirrors MCS_TABLE. */
+/**
+ * 802.11ax, one spatial stream, sensitivity and transmit power from the
+ * mANTBox ax 15s datasheet. Mirrors MCS_TABLE.
+ *
+ * Sensitivity is quoted at 20 MHz and costs ~3 dB per doubling of channel
+ * width; transmit power falls as the modulation gets denser, which is a large
+ * part of how stepping down the ladder extends range.
+ */
 export const MCS_TABLE = [
-  { index: 0, minRssiDbm: -82.0, phyMbps: 36.0 },
-  { index: 1, minRssiDbm: -79.0, phyMbps: 72.1 },
-  { index: 2, minRssiDbm: -77.0, phyMbps: 108.1 },
-  { index: 3, minRssiDbm: -74.0, phyMbps: 144.1 },
-  { index: 4, minRssiDbm: -70.0, phyMbps: 216.2 },
-  { index: 5, minRssiDbm: -66.0, phyMbps: 288.2 },
-  { index: 6, minRssiDbm: -65.0, phyMbps: 324.3 },
-  { index: 7, minRssiDbm: -64.0, phyMbps: 360.3 },
-  { index: 8, minRssiDbm: -59.0, phyMbps: 432.4 },
-  { index: 9, minRssiDbm: -57.0, phyMbps: 480.4 },
-  { index: 10, minRssiDbm: -54.0, phyMbps: 540.4 },
-  { index: 11, minRssiDbm: -52.0, phyMbps: 600.5 },
+  { index: 0, sensitivity20MhzDbm: -96.0, txPowerDbm: 28.0, phyMbps20Mhz: 8.6 },
+  { index: 1, sensitivity20MhzDbm: -93.0, txPowerDbm: 28.0, phyMbps20Mhz: 17.2 },
+  { index: 2, sensitivity20MhzDbm: -91.0, txPowerDbm: 27.0, phyMbps20Mhz: 25.8 },
+  { index: 3, sensitivity20MhzDbm: -88.0, txPowerDbm: 27.0, phyMbps20Mhz: 34.4 },
+  { index: 4, sensitivity20MhzDbm: -84.0, txPowerDbm: 26.0, phyMbps20Mhz: 51.6 },
+  { index: 5, sensitivity20MhzDbm: -80.0, txPowerDbm: 26.0, phyMbps20Mhz: 68.8 },
+  { index: 6, sensitivity20MhzDbm: -78.0, txPowerDbm: 25.0, phyMbps20Mhz: 77.4 },
+  { index: 7, sensitivity20MhzDbm: -75.0, txPowerDbm: 25.0, phyMbps20Mhz: 86.0 },
+  { index: 8, sensitivity20MhzDbm: -72.0, txPowerDbm: 24.0, phyMbps20Mhz: 103.2 },
+  { index: 9, sensitivity20MhzDbm: -70.0, txPowerDbm: 23.0, phyMbps20Mhz: 114.7 },
+  { index: 10, sensitivity20MhzDbm: -68.0, txPowerDbm: 22.0, phyMbps20Mhz: 129.0 },
+  { index: 11, sensitivity20MhzDbm: -67.0, txPowerDbm: 22.0, phyMbps20Mhz: 143.4 },
 ];
 
 export const USABLE_FRACTION_OF_PHY = 0.45;
-export const NOISE_FLOOR_DBM = MCS_TABLE[0].minRssiDbm;
+export const DEFAULT_CHANNEL_WIDTH_MHZ = 40.0;
 export const FULL_QUALITY_HEADROOM_DB = 30.0;
+
+export const sensitivityDbm = (mcs, widthMhz = DEFAULT_CHANNEL_WIDTH_MHZ) =>
+  mcs.sensitivity20MhzDbm + 10 * Math.log10(widthMhz / 20);
+
+export const phyMbps = (mcs, widthMhz = DEFAULT_CHANNEL_WIDTH_MHZ) =>
+  mcs.phyMbps20Mhz * (widthMhz / 20);
+
+export const noiseFloorDbm = (widthMhz = DEFAULT_CHANNEL_WIDTH_MHZ) =>
+  sensitivityDbm(MCS_TABLE[0], widthMhz);
 
 export const SHORE_ANTENNA = {
   gainDbi: 15.0,
@@ -110,21 +126,27 @@ export function fsplDb(rangeM, freqMhz = DEFAULT_FREQ_MHZ) {
   return 20 * Math.log10(d) + 20 * Math.log10(freqMhz * 1e6) - 147.55;
 }
 
-export function selectMcs(rssiDbm) {
+/**
+ * The fastest modulation this path supports, or null below the floor.
+ * `pathGainDb` excludes transmit power, because each rung transmits at its own.
+ */
+export function selectMcs(pathGainDb, widthMhz = DEFAULT_CHANNEL_WIDTH_MHZ) {
   let best = null;
   for (const mcs of MCS_TABLE) {
-    if (rssiDbm >= mcs.minRssiDbm) best = mcs;
+    if (mcs.txPowerDbm + pathGainDb >= sensitivityDbm(mcs, widthMhz)) best = mcs;
   }
   return best;
 }
 
-export const headroomDb = (rssiDbm) => rssiDbm - NOISE_FLOOR_DBM;
+/** Decibels in hand before the link goes, measured on the bottom rung. */
+export const headroomDb = (pathGainDb, widthMhz = DEFAULT_CHANNEL_WIDTH_MHZ) =>
+  MCS_TABLE[0].txPowerDbm + pathGainDb - sensitivityDbm(MCS_TABLE[0], widthMhz);
 
-export const qualityFromRssi = (rssiDbm) =>
-  Math.max(0, Math.min(1, headroomDb(rssiDbm) / FULL_QUALITY_HEADROOM_DB));
+export const qualityFromHeadroom = (headroom) =>
+  Math.max(0, Math.min(1, headroom / FULL_QUALITY_HEADROOM_DB));
 
-export const usableBytesPerS = (mcs) =>
-  (mcs ? (mcs.phyMbps * 1e6 * USABLE_FRACTION_OF_PHY) / 8 : 0);
+export const usableBytesPerS = (mcs, widthMhz = DEFAULT_CHANNEL_WIDTH_MHZ) =>
+  (mcs ? (phyMbps(mcs, widthMhz) * 1e6 * USABLE_FRACTION_OF_PHY) / 8 : 0);
 
 /**
  * Where the boat is, as the radio sees it. Mirrors link_budget.geometry.
@@ -158,9 +180,9 @@ export function estimate(station, eastM, northM, options = {}) {
   const {
     vesselHeightM = 1.0,
     vesselAntenna = VESSEL_ANTENNA_OMNI,
-    txPowerDbm = 25.0,
     freqMhz = DEFAULT_FREQ_MHZ,
     waveHeightM = DEFAULT_WAVE_HEIGHT_M,
+    channelWidthMhz = DEFAULT_CHANNEL_WIDTH_MHZ,
   } = options;
 
   const geom = geometry(station, eastM, northM, vesselHeightM);
@@ -171,19 +193,23 @@ export function estimate(station, eastM, northM, options = {}) {
     geom.depressionDeg,
   );
   const vesselGain = vesselAntenna.gainDbi;
-  const peak = txPowerDbm + (station.antenna || SHORE_ANTENNA).gainDbi + vesselGain;
+  const peakGains = (station.antenna || SHORE_ANTENNA).gainDbi + vesselGain;
 
   const multipathDb = twoRayDb(
     geom.rangeM, station.heightM, vesselHeightM, waveHeightM, freqMhz,
   );
 
-  const rssiDbm = txPowerDbm + stationGain + vesselGain - pathLoss + multipathDb;
+  const pathGainDb = stationGain + vesselGain - pathLoss + multipathDb;
+  const mcs = selectMcs(pathGainDb, channelWidthMhz);
+  const headroom = headroomDb(pathGainDb, channelWidthMhz);
   return {
-    rssiDbm,
-    expectedRssiDbm: peak - pathLoss,
-    headroomDb: headroomDb(rssiDbm),
-    quality: qualityFromRssi(rssiDbm),
-    mcs: selectMcs(rssiDbm),
+    rssiDbm: mcs ? mcs.txPowerDbm + pathGainDb : null,
+    expectedRssiDbm: MCS_TABLE[0].txPowerDbm + peakGains - pathLoss,
+    headroomDb: headroom,
+    quality: qualityFromHeadroom(headroom),
+    mcs,
+    pathGainDb,
+    channelWidthMhz,
     multipathDb,
     patternLossDb:
       (station.antenna || SHORE_ANTENNA).gainDbi - stationGain,

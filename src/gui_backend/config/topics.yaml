@@ -136,6 +136,54 @@ estop:
     stop the boat. The hardware killswitch and RC channel 8 are the only things
     that cut propulsion.
 
+# Where the shore station stands, and which way it faces.
+#
+# PROVISIONAL, and deliberately **not configured** by default. The tripod moves
+# between missions and can be turned by hand mid-mission, so there is no
+# surveyed position to fall back on — and a default one would have the panel
+# draw a confident bearing to a station that is somewhere else. While
+# `configured: false` the geometry fields go out as null and the panel says the
+# station has not been entered, which is true and is actionable.
+#
+# Fill this in and the link panel gains range, bearing from the sector's
+# boresight, and a signal *predicted* from the link budget (labelled as
+# predicted — nothing reads the radio yet). The same module and the same
+# arithmetic the simulator uses: asket_common/link_budget.py.
+#
+# These values belong on the mission setup page beside the sonar mounting
+# geometry. This entry is the interim. See docs/open_questions.md Q11.
+shore_station:
+  configured: false
+  lat: 0.0
+  lon: 0.0
+  # Phase centre above the water: the 2.9 m tripod, plus a little.
+  height_m: 2.9
+  # Compass bearing the sector faces.
+  boresight_deg: 0.0
+  antenna:
+    # MikroTik mANTBox ax 15s: 15 dBi, 120 deg azimuth (checked against
+    # MikroTik's own product pages). The elevation figure is a guess — they
+    # publish the pattern as a plot and state no number — and it only matters
+    # very close in, under the tripod.
+    gain_dbi: 15.0
+    azimuth_beamwidth_deg: 120.0
+    elevation_beamwidth_deg: 10.0
+  vessel_radio:
+    # Omnidirectional on the boat: the gain lives ashore where the tripod does
+    # not move during a line. Height is a guess and it is the term that
+    # dominates useful range — the two-ray null structure goes as the product
+    # of the two antenna heights.
+    height_m: 1.0
+  freq_mhz: 5500.0
+  # Every doubling of channel width costs 3 dB of range and buys twice the
+  # throughput. This link's job is a camera and telemetry, and even 20 MHz at a
+  # middling modulation carries more than the video needs.
+  channel_width_mhz: 40.0
+  # Significant wave height. Decides whether the close-in multipath nulls
+  # exist: the Atlantic off Walvis Bay rarely does, a calm morning inshore
+  # does, and that is when somebody is testing at the ramp.
+  wave_height_m: 0.5
+
 # Battery capacity, needed to turn a percentage into an endurance estimate.
 # PROVISIONAL (Q5).
 vessel:

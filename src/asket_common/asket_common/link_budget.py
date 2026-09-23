@@ -22,13 +22,16 @@ and the bearer selection stay in ``asket_sim``.
 Conventions follow :mod:`asket_common.geo`: local ENU metres, compass degrees
 (0 = true north, increasing clockwise).
 
-**Every default in this file is PROVISIONAL.** The numbers are the published or
-conventional figures for this class of equipment, not measurements of the
-equipment we are buying, and several of them matter a great deal — see
-``docs/open_questions.md``. The ones worth checking first are the sector's
-azimuth beamwidth, whether the boat's antenna is directional at all, and the
-boat antenna's *height*, which turns out to dominate the useful range (see
-:func:`two_ray_db`).
+Most defaults here are now the equipment's **published figures** — the sector's
+120 degree beamwidth, and the receiver sensitivity and per-rate transmit power
+straight off the mANTBox ax 15s datasheet. What remains genuinely PROVISIONAL
+is marked as such, and the one that matters most is the boat antenna's
+*height*, which dominates useful range (see :func:`two_ray_db`) and is
+currently a guess. See ``docs/open_questions.md``.
+
+A note on which radio. The plain mANTBox 15s is 802.11ac; only the **mANTBox
+ax 15s** is Wi-Fi 6. This module models the ax, since Wi-Fi 6 was the stated
+intent — worth confirming the order matches.
 """
 
 from __future__ import annotations
@@ -105,34 +108,41 @@ class Antenna:
         return self.gain_dbi - min(loss, self.front_to_back_db)
 
 
-#: MikroTik mANTBox 15s, ashore. PROVISIONAL: 120 deg is this product's
-#: published azimuth sector. Auxence has described the plan as a "~60 deg
-#: sector", and the difference is not cosmetic — it halves the area the boat
-#: can work before somebody has to turn the tripod, which is the number the
-#: link panel exists to make visible. Check the part before trusting either.
+#: The sector ashore: 15 dBi, **120 degrees**, checked against MikroTik's own
+#: product pages and their resellers rather than taken from memory. Both the
+#: mANTBox 15s and the Wi-Fi 6 mANTBox ax 15s publish the same figure, so the
+#: 60 degrees this was briefly thought to be would have halved the working
+#: area before somebody had to turn the tripod — in the pessimistic direction,
+#: as it happens, but wrong either way.
+#:
+#: The elevation beamwidth is still a guess. MikroTik publish the elevation
+#: pattern as a polar plot and state no number, and 10 degrees is typical for
+#: a 15 dBi sector. It matters only very close in, where the depression angle
+#: to the boat gets large — the cone of silence under the tripod.
 SHORE_ANTENNA = Antenna(
     gain_dbi=15.0, azimuth_beamwidth_deg=120.0, elevation_beamwidth_deg=10.0
 )
 
-#: The boat end, if the HGO-Antenna-OUT turns out to be directional. Modelled,
-#: tested, and **not the default** — see below.
-VESSEL_ANTENNA_DIRECTIONAL = Antenna(
-    gain_dbi=6.7, azimuth_beamwidth_deg=60.0, elevation_beamwidth_deg=60.0
-)
-
-#: The boat end as assumed until somebody confirms otherwise. PROVISIONAL.
+#: The boat end. **Omnidirectional, decided** — the gain lives ashore, where
+#: the tripod does not move during a survey line and is cheap to aim, and the
+#: boat is free to point wherever the survey does.
 #:
-#: Defaulting to an omni is not laziness, it is the result of running the
-#: directional case: a 60-degree antenna bolted to the boat facing forward
-#: points *away from the shore station* for the whole of every outbound survey
-#: line, which costs the backlobe's 25 dB and takes the link from comfortable
-#: to dead at 900 m. If the antenna really is directional then the mounting is
-#: the design decision, not a detail — aft-facing, or on a mast with no strong
-#: pattern — and a simulator whose default models a boat nobody would build
-#: teaches nothing. So the heading-dependent term is implemented and tested,
-#: and switched off until the part is confirmed.
+#: The 6.7 dBi is the HGO-Antenna-OUT's figure and is still PROVISIONAL; the
+#: *pattern* is not a guess any more. This matters more than it sounds: the
+#: whole heading term below drops out, which is why the boat's off-boresight
+#: angle is reported as ``None`` rather than zero, and why nothing in this
+#: model depends on knowing which way the boat is facing.
 VESSEL_ANTENNA_OMNI = Antenna(
     gain_dbi=6.7, azimuth_beamwidth_deg=360.0, elevation_beamwidth_deg=360.0
+)
+
+#: A directional boat antenna, kept because :class:`Antenna` has to handle one
+#: and a tested path is better than an untested branch — not because anything
+#: uses it. If it is ever fitted, note that facing it forward points it away
+#: from the station on every outbound survey line, which costs the backlobe's
+#: 25 dB; the mounting would be a design decision rather than a detail.
+VESSEL_ANTENNA_DIRECTIONAL = Antenna(
+    gain_dbi=6.7, azimuth_beamwidth_deg=60.0, elevation_beamwidth_deg=60.0
 )
 
 
@@ -179,6 +189,10 @@ class VesselRadio:
 class Propagation:
     freq_mhz: float = DEFAULT_FREQ_MHZ
     wave_height_m: float = DEFAULT_WAVE_HEIGHT_M
+    #: See DEFAULT_CHANNEL_WIDTH_MHZ: every doubling costs 3 dB of range and
+    #: buys twice the throughput, and this link needs range more than it needs
+    #: bandwidth it will not use.
+    channel_width_mhz: float = 40.0
 
 
 # -- geometry --------------------------------------------------------------
@@ -327,17 +341,51 @@ def two_ray_db(
 
 @dataclass(frozen=True)
 class Mcs:
+    """One rung of the modulation ladder, as the radio's datasheet states it.
+
+    Two things here are easy to get wrong and both change the answer by
+    several decibels.
+
+    **Sensitivity depends on channel width.** A wider channel spreads the same
+    transmit power over more spectrum, so the receiver needs a stronger signal:
+    about 3 dB per doubling. The datasheet quotes 20 MHz, so that is what is
+    stored and :meth:`sensitivity_dbm` does the arithmetic.
+
+    **Transmit power depends on the rate.** A radio backs off as it moves to
+    denser modulation to keep the constellation clean — 28 dBm at MCS0 down to
+    22 dBm at MCS11 on this one. That is not a detail: it means stepping *down*
+    the ladder buys 6 dB as well as a lower rate, which is a large part of how
+    rate adaptation extends range, and a model with one flat transmit power
+    misses it entirely.
+    """
+
     index: int
-    min_rssi_dbm: float
-    phy_mbps: float
+    #: Receiver sensitivity in a 20 MHz channel, dBm.
+    sensitivity_20mhz_dbm: float
+    #: Conducted transmit power at this rate, dBm.
+    tx_power_dbm: float
+    #: PHY rate in a 20 MHz channel, one spatial stream, Mbit/s.
+    phy_mbps_20mhz: float
 
     @property
     def name(self) -> str:
         return f"MCS{self.index}"
 
-    @property
-    def usable_bytes_per_s(self) -> float:
-        return self.phy_mbps * 1e6 * USABLE_FRACTION_OF_PHY / 8.0
+    def sensitivity_dbm(self, channel_width_mhz: float = 40.0) -> float:
+        return self.sensitivity_20mhz_dbm + 10.0 * math.log10(channel_width_mhz / 20.0)
+
+    def phy_mbps(self, channel_width_mhz: float = 40.0) -> float:
+        """Approximate: a wider channel carries proportionally more subcarriers.
+
+        Slightly pessimistic at 80 MHz, where the usable fraction of the band
+        is a little higher — which is the direction to be wrong in.
+        """
+        return self.phy_mbps_20mhz * (channel_width_mhz / 20.0)
+
+    def usable_bytes_per_s(self, channel_width_mhz: float = 40.0) -> float:
+        return (
+            self.phy_mbps(channel_width_mhz) * 1e6 * USABLE_FRACTION_OF_PHY / 8.0
+        )
 
 
 #: What fraction of the PHY rate survives as application throughput, after
@@ -345,73 +393,110 @@ class Mcs:
 #: rather than optimistic: measure it at the ramp before believing it.
 USABLE_FRACTION_OF_PHY = 0.45
 
-#: 802.11ax, 80 MHz, one spatial stream, 0.8 us guard interval. PHY rates are
-#: from the standard's MCS table; the sensitivities are conventional figures
-#: for this class of radio, not measurements. PROVISIONAL.
+#: 802.11ax, one spatial stream, 0.8 us guard interval.
 #:
-#: One stream, not two, because nothing here has confirmed the boat antenna is
-#: dual-polarity. If it is, every rate doubles and the sensitivities do not
-#: move, which widens the *throughput* but not the *range* — the cliff below
-#: stays exactly where it is.
+#: **Sensitivity and transmit power are the mANTBox ax 15s datasheet's own
+#: figures**, not the conventional numbers this table first held. The
+#: datasheet states four rungs at 5 GHz — MCS0 at -96 dBm / 28 dBm, MCS7 at
+#: -75 / 25, MCS9 at -70 / 23, MCS11 at -67 / 22 — and the rungs between them
+#: are interpolated along the standard's own modulation and coding steps,
+#: which land exactly on all four anchors.
+#:
+#: The first draft of this table guessed -82 dBm for MCS0 and a flat 25 dBm
+#: of transmit power. Both were pessimistic, and together by about 11 dB,
+#: which in the two-ray regime is very nearly a factor of two in range: it put
+#: the cliff at 2.7 km when the gear supports something closer to 6. Worth
+#: remembering the next time a "conventional figure" looks harmless.
+#:
+#: One spatial stream, not two. The antenna is dual-polarity so two streams
+#: are likely available, which would double every rate — but not move a single
+#: sensitivity, so it widens the pipe without extending the range. The cliff
+#: below is where it is either way.
 MCS_TABLE: tuple[Mcs, ...] = (
-    Mcs(0, -82.0, 36.0),
-    Mcs(1, -79.0, 72.1),
-    Mcs(2, -77.0, 108.1),
-    Mcs(3, -74.0, 144.1),
-    Mcs(4, -70.0, 216.2),
-    Mcs(5, -66.0, 288.2),
-    Mcs(6, -65.0, 324.3),
-    Mcs(7, -64.0, 360.3),
-    Mcs(8, -59.0, 432.4),
-    Mcs(9, -57.0, 480.4),
-    Mcs(10, -54.0, 540.4),
-    Mcs(11, -52.0, 600.5),
+    Mcs(0, -96.0, 28.0, 8.6),
+    Mcs(1, -93.0, 28.0, 17.2),
+    Mcs(2, -91.0, 27.0, 25.8),
+    Mcs(3, -88.0, 27.0, 34.4),
+    Mcs(4, -84.0, 26.0, 51.6),
+    Mcs(5, -80.0, 26.0, 68.8),
+    Mcs(6, -78.0, 25.0, 77.4),
+    Mcs(7, -75.0, 25.0, 86.0),
+    Mcs(8, -72.0, 24.0, 103.2),
+    Mcs(9, -70.0, 23.0, 114.7),
+    Mcs(10, -68.0, 22.0, 129.0),
+    Mcs(11, -67.0, 22.0, 143.4),
 )
 
-#: Below this there is no link at all. This is the cliff, and it is a real
-#: number from the table rather than a tuning knob: it is the signal the
-#: lowest modulation needs to stay locked.
-NOISE_FLOOR_DBM = MCS_TABLE[0].min_rssi_dbm
+#: Channel width, MHz. PROVISIONAL, and a real deployment choice rather than a
+#: constant: every doubling costs 3 dB of range and buys twice the throughput.
+#:
+#: 40 MHz because this link's job is a camera and telemetry. Even 20 MHz at a
+#: middling modulation carries more than the video needs, so spending range on
+#: bandwidth nobody uses is a poor trade — and range is the thing that decides
+#: whether the boat keeps its link at the far end of the survey box.
+DEFAULT_CHANNEL_WIDTH_MHZ = 40.0
 
 #: Headroom above the cliff at which the link counts as unimpaired. Used only
 #: to map decibels onto the 0..1 quality the profile selector already speaks.
 FULL_QUALITY_HEADROOM_DB = 30.0
 
 
-def select_mcs(rssi_dbm: float) -> Mcs | None:
-    """The fastest modulation this signal supports, or None below the floor.
+def noise_floor_dbm(channel_width_mhz: float = DEFAULT_CHANNEL_WIDTH_MHZ) -> float:
+    """The signal the most robust modulation needs. Below this, no link.
 
-    The staircase, and then the cliff. Rate adaptation steps down through the
-    table as signal falls — throughput drops in jumps, not smoothly — and then
-    at the bottom step there is nothing below, which is what makes a directional
-    link fail the way it does.
+    A function rather than a constant because it moves with channel width,
+    and a constant that silently meant "at 20 MHz" is the shape of the bug
+    this whole table just had.
+    """
+    return MCS_TABLE[0].sensitivity_dbm(channel_width_mhz)
+
+
+def select_mcs(
+    path_gain_db: float, channel_width_mhz: float = DEFAULT_CHANNEL_WIDTH_MHZ
+) -> Mcs | None:
+    """The fastest modulation this path supports, or None below the floor.
+
+    ``path_gain_db`` is everything between the transmitter's output and the
+    receiver's input — antenna gains, path loss, multipath — with the
+    transmit power left out, because each rung transmits at a different power.
+    Each rung is therefore tested on its own terms.
+
+    The staircase, and then the cliff: throughput drops in jumps as the radio
+    steps down, and at the bottom rung there is nothing below.
     """
     best: Mcs | None = None
     for mcs in MCS_TABLE:
-        if rssi_dbm >= mcs.min_rssi_dbm:
+        if mcs.tx_power_dbm + path_gain_db >= mcs.sensitivity_dbm(channel_width_mhz):
             best = mcs
     return best
 
 
-def headroom_db(rssi_dbm: float) -> float:
+def headroom_db(
+    path_gain_db: float, channel_width_mhz: float = DEFAULT_CHANNEL_WIDTH_MHZ
+) -> float:
     """Decibels in hand before the link is lost entirely.
 
-    Deliberately measured against the cliff rather than against the current
-    modulation's requirement. Margin-to-next-rate-step is what an RF engineer
-    wants; an operator watching a boat cannot see rate steps and does not care
-    about them. What they can act on is how much they can afford to lose.
+    Measured on the bottom rung — its transmit power against its sensitivity —
+    because that is the rung the radio will be on when the link finally goes,
+    and it is deliberately not margin-to-the-next-rate-step. Margin to a rate
+    step is what an RF engineer wants; an operator watching a boat cannot see
+    rate steps and cannot act on them. What they can act on is how much signal
+    they can afford to lose.
     """
-    return rssi_dbm - NOISE_FLOOR_DBM
+    bottom = MCS_TABLE[0]
+    return (bottom.tx_power_dbm + path_gain_db) - bottom.sensitivity_dbm(
+        channel_width_mhz
+    )
 
 
-def quality_from_rssi(rssi_dbm: float) -> float:
+def quality_from_headroom(headroom: float) -> float:
     """Headroom, expressed as the 0..1 the profile selector already consumes.
 
     Keeping the old vocabulary matters: ``ProfileSelector`` and the link panel
-    are tuned against quality, and this change is meant to give those thresholds
-    a physical meaning rather than to invalidate them.
+    are tuned against quality, and this change is meant to give those
+    thresholds a physical meaning rather than to invalidate them.
     """
-    return max(0.0, min(1.0, headroom_db(rssi_dbm) / FULL_QUALITY_HEADROOM_DB))
+    return max(0.0, min(1.0, headroom / FULL_QUALITY_HEADROOM_DB))
 
 
 # -- the budget ------------------------------------------------------------
@@ -419,19 +504,26 @@ def quality_from_rssi(rssi_dbm: float) -> float:
 
 @dataclass(frozen=True)
 class LinkEstimate:
-    rssi_dbm: float
-    #: What this range would give with the antennas pointed at each other and
-    #: no sea in the way. The *difference* is the diagnostic: a signal that
-    #: matches its range means you are simply far away, and one that does not
-    #: means alignment, obstruction, or a multipath null.
+    #: Signal at the receiver on the modulation actually in use. None past the
+    #: cliff, where there is no modulation and so no signal to quote.
+    rssi_dbm: float | None
+    #: What this range would give with the antennas pointed at each other, no
+    #: sea in the way, and the most robust modulation's transmit power. The
+    #: *difference* is the diagnostic: a signal that matches its range means
+    #: you are simply far away, and one that does not means alignment, an
+    #: obstruction, or a multipath null.
     expected_rssi_dbm: float
     headroom_db: float
     quality: float
     mcs: Mcs | None
+    #: Everything between transmitter output and receiver input, transmit
+    #: power excluded. Negative, and large.
+    path_gain_db: float
     #: Loss from both antenna patterns, dB, positive.
     pattern_loss_db: float
     #: Sea-surface interference, dB, signed.
     multipath_db: float
+    channel_width_mhz: float
     geometry: Geometry
 
     @property
@@ -441,11 +533,15 @@ class LinkEstimate:
     @property
     def deviation_db(self) -> float:
         """Negative means worse than this range should give."""
-        return self.rssi_dbm - self.expected_rssi_dbm
+        bottom = MCS_TABLE[0]
+        on_the_floor = bottom.tx_power_dbm + self.path_gain_db
+        return on_the_floor - self.expected_rssi_dbm
 
     @property
     def usable_bytes_per_s(self) -> float:
-        return self.mcs.usable_bytes_per_s if self.mcs else 0.0
+        if self.mcs is None:
+            return 0.0
+        return self.mcs.usable_bytes_per_s(self.channel_width_mhz)
 
 
 def estimate(
@@ -454,9 +550,15 @@ def estimate(
     propagation: Propagation,
     geom: Geometry,
 ) -> LinkEstimate:
-    """The whole budget, from geometry to a modulation. No randomness."""
+    """The whole budget, from geometry to a modulation. No randomness.
+
+    Modelled in the boat-to-shore direction, because that is the way the video
+    travels and therefore the direction that decides what the operator sees.
+    Path loss is reciprocal and both ends are the same family of radio, so the
+    reverse differs only in which antenna gain sits at which end — and both
+    gains are in the sum either way.
+    """
     path_loss = fspl_db(geom.range_m, propagation.freq_mhz)
-    peak = station.tx_power_dbm + station.antenna.gain_dbi + vessel.antenna.gain_dbi
 
     station_gain = station.antenna.gain_at(geom.off_boresight_deg, geom.depression_deg)
     if geom.vessel_off_boresight_deg is None:
@@ -472,15 +574,22 @@ def estimate(
         propagation.wave_height_m, propagation.freq_mhz,
     )
 
-    rssi = station.tx_power_dbm + station_gain + vessel_gain - path_loss + multipath
+    path_gain = station_gain + vessel_gain - path_loss + multipath
+    width = propagation.channel_width_mhz
+    mcs = select_mcs(path_gain, width)
+    headroom = headroom_db(path_gain, width)
+
+    peak_gains = station.antenna.gain_dbi + vessel.antenna.gain_dbi
     return LinkEstimate(
-        rssi_dbm=rssi,
-        expected_rssi_dbm=peak - path_loss,
-        headroom_db=headroom_db(rssi),
-        quality=quality_from_rssi(rssi),
-        mcs=select_mcs(rssi),
+        rssi_dbm=(mcs.tx_power_dbm + path_gain) if mcs else None,
+        expected_rssi_dbm=MCS_TABLE[0].tx_power_dbm + peak_gains - path_loss,
+        headroom_db=headroom,
+        quality=quality_from_headroom(headroom),
+        mcs=mcs,
+        path_gain_db=path_gain,
         pattern_loss_db=pattern_loss,
         multipath_db=multipath,
+        channel_width_mhz=width,
         geometry=geom,
     )
 

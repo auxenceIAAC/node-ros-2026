@@ -279,6 +279,7 @@ export function linkPayload(world, detail, context) {
       // What the radio sees. Null on a bearer the budget does not model, and
       // null is the honest answer there — a zero would render as "no signal".
       rssi_dbm: round(link.rssiDbm, 1),
+      rssi_source: link.rssiSource ?? null,
       expected_rssi_dbm: round(link.expectedRssiDbm, 1),
       headroom_db: round(link.headroomDb, 1),
       mcs_index: link.mcsIndex,

@@ -30,15 +30,16 @@ from pathlib import Path
 
 import pytest
 from asket_common.link_budget import (
+    DEFAULT_CHANNEL_WIDTH_MHZ,
     MCS_TABLE,
-    NOISE_FLOOR_DBM,
     USABLE_FRACTION_OF_PHY,
     Propagation,
     RadioConfig,
     ShoreStation,
     VesselRadio,
     headroom_db,
-    quality_from_rssi,
+    noise_floor_dbm,
+    quality_from_headroom,
     select_mcs,
 )
 
@@ -70,10 +71,10 @@ TOLERANCE_DB = 0.05
 #: couple of points behind the tripod.
 POINTS = [
     (0.0, 100.0), (0.0, 400.0), (0.0, 900.0), (0.0, 1500.0),
-    (0.0, 2000.0), (0.0, 2400.0), (0.0, 2600.0), (0.0, 4000.0),
+    (0.0, 2500.0), (0.0, 4000.0), (0.0, 6000.0), (0.0, 9000.0),
     (0.0, 53.2), (0.0, 106.4), (0.0, 133.0), (0.0, 180.0),
-    (300.0, 900.0), (780.0, 450.0), (900.0, 0.0), (1200.0, -300.0),
-    (-300.0, 900.0), (-780.0, 450.0), (0.0, -800.0), (0.0, -2000.0),
+    (800.0, 2400.0), (2170.0, 1250.0), (2500.0, 0.0), (3000.0, -800.0),
+    (-800.0, 2400.0), (-2170.0, 1250.0), (0.0, -2500.0), (0.0, -6000.0),
 ]
 
 
@@ -103,6 +104,7 @@ def javascript_estimates() -> list[dict]:
             quality: est.quality,
             mcs_index: est.mcs === null ? null : est.mcs.index,
             multipath_db: est.multipathDb,
+            path_gain_db: est.pathGainDb,
             usable_bytes_per_s: LB.usableBytesPerS(est.mcs),
           }};
         }});
@@ -163,7 +165,13 @@ def test_the_signal_agrees(rows):
         assert estimate.multipath_db == pytest.approx(
             row["multipath_db"], abs=TOLERANCE_DB
         ), where
-        assert estimate.rssi_dbm == pytest.approx(row["rssi_dbm"], abs=TOLERANCE_DB), where
+        assert estimate.path_gain_db == pytest.approx(
+            row["path_gain_db"], abs=TOLERANCE_DB
+        ), where
+        if estimate.rssi_dbm is None:
+            assert row["rssi_dbm"] is None, where
+        else:
+            assert estimate.rssi_dbm == pytest.approx(row["rssi_dbm"], abs=TOLERANCE_DB), where
         assert estimate.expected_rssi_dbm == pytest.approx(
             row["expected_rssi_dbm"], abs=TOLERANCE_DB
         ), where
@@ -210,9 +218,12 @@ def test_the_constants_themselves_match():
         f"""
         const LB = await import('{MOCK}/linkBudget.js');
         console.log(JSON.stringify({{
-          table: LB.MCS_TABLE.map((m) => [m.index, m.minRssiDbm, m.phyMbps]),
-          floor: LB.NOISE_FLOOR_DBM,
+          table: LB.MCS_TABLE.map(
+            (m) => [m.index, m.sensitivity20MhzDbm, m.txPowerDbm, m.phyMbps20Mhz],
+          ),
+          floor: LB.noiseFloorDbm(),
           fraction: LB.USABLE_FRACTION_OF_PHY,
+          width: LB.DEFAULT_CHANNEL_WIDTH_MHZ,
         }}));
         """
     )
@@ -224,27 +235,36 @@ def test_the_constants_themselves_match():
         pytest.fail(f"node failed:\n{result.stderr}")
     js = json.loads(result.stdout)
 
-    assert js["table"] == [[m.index, m.min_rssi_dbm, m.phy_mbps] for m in MCS_TABLE]
-    assert js["floor"] == NOISE_FLOOR_DBM
+    assert js["table"] == [
+        [m.index, m.sensitivity_20mhz_dbm, m.tx_power_dbm, m.phy_mbps_20mhz]
+        for m in MCS_TABLE
+    ]
+    assert js["floor"] == pytest.approx(noise_floor_dbm())
     assert js["fraction"] == USABLE_FRACTION_OF_PHY
+    assert js["width"] == DEFAULT_CHANNEL_WIDTH_MHZ
 
 
 def test_rate_selection_agrees_either_side_of_every_rung():
     """Swept rather than sampled, because rate selection is a step function and
     the interesting values are the steps. A tenth of a decibel either side of
-    each boundary, plus the cliff."""
+    each rung's own viability threshold — which is not one number any more,
+    since each rung transmits at a different power — plus the cliff."""
     script = textwrap.dedent(
         f"""
         const LB = await import('{MOCK}/linkBudget.js');
         const probes = [];
         for (const mcs of LB.MCS_TABLE) {{
-          probes.push(mcs.minRssiDbm - 0.1, mcs.minRssiDbm, mcs.minRssiDbm + 0.1);
+          // The path gain at which this rung becomes exactly viable, and a
+          // tenth of a decibel either side of it. Not one number any more:
+          // each rung transmits at its own power, so each has its own edge.
+          const edge = LB.sensitivityDbm(mcs) - mcs.txPowerDbm;
+          probes.push(edge - 0.1, edge, edge + 0.1);
         }}
-        probes.push(-120, -95, -30);
-        console.log(JSON.stringify(probes.map((r) => {{
-          const m = LB.selectMcs(r);
-          return [r, m === null ? null : m.index,
-                  LB.headroomDb(r), LB.qualityFromRssi(r)];
+        probes.push(-200, -140, -80);
+        console.log(JSON.stringify(probes.map((g) => {{
+          const m = LB.selectMcs(g);
+          return [g, m === null ? null : m.index,
+                  LB.headroomDb(g), LB.qualityFromHeadroom(LB.headroomDb(g))];
         }})));
         """
     )
@@ -257,8 +277,10 @@ def test_rate_selection_agrees_either_side_of_every_rung():
 
     rows = json.loads(result.stdout)
     assert len(rows) == len(MCS_TABLE) * 3 + 3
-    for rssi, index, head, quality in rows:
-        mcs = select_mcs(rssi)
-        assert (mcs.index if mcs else None) == index, f"at {rssi} dBm"
-        assert headroom_db(rssi) == pytest.approx(head, abs=1e-9), f"at {rssi} dBm"
-        assert quality_from_rssi(rssi) == pytest.approx(quality, abs=1e-9), f"at {rssi} dBm"
+    for gain, index, head, quality in rows:
+        mcs = select_mcs(gain)
+        assert (mcs.index if mcs else None) == index, f"at {gain:.2f} dB path gain"
+        assert headroom_db(gain) == pytest.approx(head, abs=1e-9), f"at {gain:.2f} dB"
+        assert quality_from_headroom(headroom_db(gain)) == pytest.approx(
+            quality, abs=1e-9
+        ), f"at {gain:.2f} dB"

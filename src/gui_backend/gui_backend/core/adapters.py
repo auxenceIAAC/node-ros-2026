@@ -465,12 +465,71 @@ def sonar_from_ros(msg):
     )
 
 
-def link_from_measurements(active_link: str, quality: float, rtt_ms: float, capacity: float):
-    """Build a link record from what the backend has measured itself."""
-    return SimpleNamespace(
+def link_from_measurements(
+    active_link: str,
+    quality: float,
+    rtt_ms: float,
+    capacity: float,
+    *,
+    radio=None,
+    east_m: float | None = None,
+    north_m: float | None = None,
+):
+    """Build a link record from what the backend has measured itself.
+
+    Round-trip time and the byte rate are **measured** — the backend times its
+    own pings and counts what it sends, and nothing here may overwrite them
+    with a prediction.
+
+    Everything else on a directional link — signal, headroom, which way the
+    boat sits in the sector — is not measured by anything today. Nothing reads
+    the radio yet. But the geometry half needs no radio at all: given where the
+    boat is and where the tripod is, :mod:`asket_common.link_budget` computes
+    what this range *should* be giving, and that is the same module and the
+    same arithmetic the simulator runs. One set of physics, not two.
+
+    So when a station is configured and there is a fix, the record carries a
+    **predicted** signal, and ``rssi_source`` says ``"predicted"`` in as many
+    words. A modelled number shown as though it were measured is precisely the
+    lie this interface exists to prevent, and the day a RouterOS poller lands,
+    that field becomes ``"measured"`` and nothing else has to change.
+    """
+    record = SimpleNamespace(
         active_link=active_link,
         quality=quality,
         rtt_ms=rtt_ms,
         capacity_bytes_per_s=capacity,
         distance_m=float("nan"),
+        rssi_dbm=None,
+        rssi_source=None,
+        expected_rssi_dbm=None,
+        headroom_db=None,
+        mcs_index=None,
+        phy_mbps=None,
+        off_boresight_deg=None,
+        sector_beamwidth_deg=None,
+        vessel_off_boresight_deg=None,
+        multipath_db=None,
+        pattern_loss_db=None,
+        sea_state_m=None,
     )
+    if radio is None or east_m is None or north_m is None:
+        return record
+
+    estimate = radio.estimate_at(east_m, north_m)
+    geom = estimate.geometry
+    record.distance_m = geom.range_m
+    record.off_boresight_deg = geom.off_boresight_deg
+    record.sector_beamwidth_deg = radio.station.antenna.azimuth_beamwidth_deg
+    record.vessel_off_boresight_deg = geom.vessel_off_boresight_deg
+    record.multipath_db = estimate.multipath_db
+    record.pattern_loss_db = estimate.pattern_loss_db
+    record.sea_state_m = radio.propagation.wave_height_m
+    record.headroom_db = estimate.headroom_db
+    record.expected_rssi_dbm = estimate.expected_rssi_dbm
+    if estimate.mcs is not None:
+        record.rssi_dbm = estimate.rssi_dbm
+        record.rssi_source = "predicted"
+        record.mcs_index = estimate.mcs.index
+        record.phy_mbps = estimate.mcs.phy_mbps(estimate.channel_width_mhz)
+    return record

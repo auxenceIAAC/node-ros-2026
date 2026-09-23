@@ -12,8 +12,8 @@ import math
 
 import pytest
 from asket_common.link_budget import (
+    DEFAULT_CHANNEL_WIDTH_MHZ,
     MCS_TABLE,
-    NOISE_FLOOR_DBM,
     SHORE_ANTENNA,
     VESSEL_ANTENNA_DIRECTIONAL,
     VESSEL_ANTENNA_OMNI,
@@ -25,7 +25,8 @@ from asket_common.link_budget import (
     fspl_db,
     geometry,
     headroom_db,
-    quality_from_rssi,
+    noise_floor_dbm,
+    quality_from_headroom,
     select_mcs,
     specular_coefficient,
     two_ray_db,
@@ -217,8 +218,8 @@ def test_raising_the_boat_antenna_buys_range():
     tripod, which is already as tall as it gets."""
     low = RadioConfig(station=STATION, vessel=VesselRadio(height_m=1.0))
     high = RadioConfig(station=STATION, vessel=VesselRadio(height_m=2.5))
-    gain = (high.estimate_at(0.0, 2500.0).rssi_dbm
-            - low.estimate_at(0.0, 2500.0).rssi_dbm)
+    gain = (high.estimate_at(0.0, 4000.0).path_gain_db
+            - low.estimate_at(0.0, 4000.0).path_gain_db)
     assert gain > 5.0, f"raising the antenna bought only {gain:.1f} dB"
 
 
@@ -234,50 +235,92 @@ def test_a_perfect_null_does_not_produce_minus_infinity():
 
 
 def test_the_table_is_a_staircase_in_both_directions():
-    """Faster modulations need more signal. A row out of order would make rate
-    selection non-monotonic, and the staircase would have a step down in it."""
+    """Faster modulations need more signal and transmit at less power. A row
+    out of order would make rate selection non-monotonic, and the staircase
+    would have a step down in it."""
     for lower, higher in zip(MCS_TABLE, MCS_TABLE[1:]):
-        assert higher.phy_mbps > lower.phy_mbps
-        assert higher.min_rssi_dbm > lower.min_rssi_dbm
+        assert higher.phy_mbps_20mhz > lower.phy_mbps_20mhz
+        assert higher.sensitivity_20mhz_dbm > lower.sensitivity_20mhz_dbm
+        assert higher.tx_power_dbm <= lower.tx_power_dbm
+
+
+def test_the_table_still_matches_the_four_rungs_the_datasheet_states():
+    """The mANTBox ax 15s publishes MCS0, 7, 9 and 11 at 5 GHz; the rest are
+    interpolated. If somebody retunes the interpolation, these four must not
+    move — they are the only numbers here that are not a judgement."""
+    published = {0: (-96.0, 28.0), 7: (-75.0, 25.0), 9: (-70.0, 23.0), 11: (-67.0, 22.0)}
+    for mcs in MCS_TABLE:
+        if mcs.index in published:
+            assert (mcs.sensitivity_20mhz_dbm, mcs.tx_power_dbm) == published[mcs.index]
+
+
+def test_a_wider_channel_costs_sensitivity_and_buys_rate():
+    """Three decibels per doubling, both ways. This is a real deployment
+    choice — range against throughput — and getting the sign wrong would make
+    the model recommend the opposite of the right one."""
+    mcs = MCS_TABLE[0]
+    assert mcs.sensitivity_dbm(20.0) == pytest.approx(mcs.sensitivity_20mhz_dbm)
+    assert mcs.sensitivity_dbm(40.0) == pytest.approx(mcs.sensitivity_20mhz_dbm + 3.01, abs=0.02)
+    assert mcs.sensitivity_dbm(80.0) == pytest.approx(mcs.sensitivity_20mhz_dbm + 6.02, abs=0.02)
+    assert mcs.phy_mbps(40.0) == pytest.approx(2 * mcs.phy_mbps_20mhz)
+
+
+def test_stepping_down_the_ladder_buys_transmit_power():
+    """Six decibels between the top rung and the bottom, on this radio. A model
+    with one flat transmit power misses a large part of how rate adaptation
+    extends range — and the first draft of this table did exactly that."""
+    assert MCS_TABLE[0].tx_power_dbm - MCS_TABLE[-1].tx_power_dbm == pytest.approx(6.0)
 
 
 def test_rate_selection_picks_the_fastest_that_fits():
-    assert select_mcs(-52.0).index == 11
-    assert select_mcs(-65.0).index == 6
-    assert select_mcs(-81.9).index == 0
+    """Argument is path gain, not signal: each rung transmits at its own power,
+    so there is no single signal until a rung has been chosen."""
+    width = DEFAULT_CHANNEL_WIDTH_MHZ
+    for mcs in MCS_TABLE:
+        just_enough = mcs.sensitivity_dbm(width) - mcs.tx_power_dbm
+        assert select_mcs(just_enough, width).index >= mcs.index
 
 
 def test_below_the_floor_there_is_no_rung():
     """The cliff. Not a slow rate — nothing. This is the property the whole
     rewrite exists for, and the one the old smooth model could not express."""
-    assert select_mcs(NOISE_FLOOR_DBM - 0.1) is None
-    assert select_mcs(-120.0) is None
+    floor_gain = noise_floor_dbm() - MCS_TABLE[0].tx_power_dbm
+    assert select_mcs(floor_gain) is not None
+    assert select_mcs(floor_gain - 0.1) is None
+    assert select_mcs(-250.0) is None
 
 
 def test_throughput_steps_rather_than_slides():
     """Between two adjacent rungs, throughput does not move at all; at the rung
     it jumps. An operator watching bandwidth on this link sees steps."""
-    a = select_mcs(-63.0).usable_bytes_per_s
-    b = select_mcs(-60.0).usable_bytes_per_s
-    c = select_mcs(-58.0).usable_bytes_per_s
-    assert a == b
-    assert c > b
+    width = DEFAULT_CHANNEL_WIDTH_MHZ
+    rungs = [select_mcs(g, width) for g in (-120.0, -119.5, -110.0)]
+    rates = [m.usable_bytes_per_s(width) if m else 0.0 for m in rungs]
+    assert rates[0] == rates[1]
+    assert rates[2] > rates[1]
 
 
 def test_headroom_is_measured_against_the_cliff():
     """Not against the current modulation's requirement. Rate steps are
     invisible to an operator; losing the link is not."""
-    assert headroom_db(-72.0) == pytest.approx(10.0)
-    assert headroom_db(NOISE_FLOOR_DBM) == pytest.approx(0.0)
+    floor_gain = noise_floor_dbm() - MCS_TABLE[0].tx_power_dbm
+    assert headroom_db(floor_gain) == pytest.approx(0.0)
+    assert headroom_db(floor_gain + 10.0) == pytest.approx(10.0)
+
+
+def test_the_floor_moves_with_the_channel_width():
+    """A constant that silently meant "at 20 MHz" is the shape of the bug this
+    table just had."""
+    assert noise_floor_dbm(40.0) == pytest.approx(noise_floor_dbm(20.0) + 3.01, abs=0.02)
 
 
 def test_quality_still_means_what_the_profile_selector_thinks_it_means():
     """The 0..1 the rest of the system already speaks, now with decibels
     behind it. Monotonic, clamped, and zero exactly at the cliff."""
-    assert quality_from_rssi(NOISE_FLOOR_DBM) == 0.0
-    assert quality_from_rssi(NOISE_FLOOR_DBM - 20.0) == 0.0
-    assert quality_from_rssi(-20.0) == 1.0
-    assert 0.0 < quality_from_rssi(-72.0) < 1.0
+    assert quality_from_headroom(0.0) == 0.0
+    assert quality_from_headroom(-20.0) == 0.0
+    assert quality_from_headroom(60.0) == 1.0
+    assert 0.0 < quality_from_headroom(10.0) < 1.0
 
 
 # -- the whole budget ------------------------------------------------------
@@ -296,8 +339,8 @@ def test_and_stops_carrying_anything_a_little_further_out():
     is not the point — the shape is: there is a range at which this link is
     fine and a range a few hundred metres later at which it is gone."""
     radio = RadioConfig(station=STATION)
-    assert radio.estimate_at(0.0, 2000.0).connected
-    assert not radio.estimate_at(0.0, 3500.0).connected
+    assert radio.estimate_at(0.0, 4000.0).connected
+    assert not radio.estimate_at(0.0, 9000.0).connected
 
 
 def test_the_deviation_names_the_difference_between_far_away_and_misaligned():
@@ -321,7 +364,7 @@ def test_expected_signal_ignores_alignment_and_weather_on_purpose():
         station=ShoreStation(east_m=0.0, north_m=0.0, boresight_deg=95.0)
     ).estimate_at(0.0, 1200.0)
     assert straight.expected_rssi_dbm == pytest.approx(turned.expected_rssi_dbm)
-    assert turned.rssi_dbm < straight.rssi_dbm
+    assert turned.path_gain_db < straight.path_gain_db
 
 
 def test_a_boat_behind_the_tripod_loses_the_link_at_range_but_not_close_in():
@@ -329,7 +372,7 @@ def test_a_boat_behind_the_tripod_loses_the_link_at_range_but_not_close_in():
     second is why it appears to do nothing at the ramp, which is correct
     behaviour and has to be documented rather than tuned away."""
     radio = RadioConfig(station=STATION)
-    assert not radio.estimate_at(0.0, -1500.0).connected
+    assert not radio.estimate_at(0.0, -6000.0).connected
     assert radio.estimate_at(0.0, -120.0).connected
 
 
@@ -341,7 +384,7 @@ def test_everything_in_an_estimate_is_finite():
     # zero and a naive log or atan2 would give up.
     for north in (0.0, 0.5, 1.0, 106.4, 500.0, 5000.0):
         estimate = radio.estimate_at(0.0, north)
-        for value in (estimate.rssi_dbm, estimate.expected_rssi_dbm,
+        for value in (estimate.path_gain_db, estimate.expected_rssi_dbm,
                       estimate.headroom_db, estimate.quality,
                       estimate.multipath_db, estimate.pattern_loss_db):
             assert math.isfinite(value), f"{value} at {north} m"

@@ -90,10 +90,20 @@ export function LinkStatus({ state, connection }) {
       <Rows>
         <Row label="Signal">
           {link?.rssi_dbm === undefined || link?.rssi_dbm === null ? (
-            <span className="dim-value" title={rssiTitle(link)}>not reported</span>
+            <span className="dim-value" title={rssiTitle(link)}>{rssiAbsent(link)}</span>
           ) : (
             <>
               {num(link.rssi_dbm, 0, ' dBm')}
+              {/*
+                Where the number came from. Nothing on the vessel reads the
+                radio yet, so what the real boat reports is computed from its
+                range — which looks exactly as plausible on a panel as a
+                measurement would, and is the reason this label is not
+                optional.
+              */}
+              {link.rssi_source === 'predicted' && (
+                <span className="hint" title={PREDICTED_TITLE}> (from range)</span>
+              )}
               <span className="hint">
                 {' '}
                 — {num(link.headroom_db, 0, ' dB')} before the link goes
@@ -169,12 +179,35 @@ export function LinkStatus({ state, connection }) {
   );
 }
 
+const PREDICTED_TITLE =
+  'Computed from the boat\u2019s range and the station\u2019s position, not read '
+  + 'off the radio \u2014 nothing reads it yet. It is what this range should be '
+  + 'giving, so a real signal below it means alignment, an obstruction or a '
+  + 'multipath null.';
+
 const SECTOR_TITLE =
   'Where the boat sits in the shore antenna\u2019s beam, worked out from its '
   + 'position and the station\u2019s. Past the edge the signal falls away '
   + 'quickly; turn the tripod before that rather than after.';
 
+function rssiAbsent(link) {
+  // Three different silences, and they send you to different places: the
+  // station was never entered, the bearer is one we do not model, or the link
+  // is gone. "Not reported" for all three would hide the only one that has
+  // something for the operator to do about it.
+  if (link?.sector_beamwidth_deg === null || link?.sector_beamwidth_deg === undefined) {
+    return 'shore station not entered';
+  }
+  if (link?.active_link === 'none') return 'no link';
+  return 'not reported';
+}
+
 function rssiTitle(link) {
+  if (link?.sector_beamwidth_deg === null || link?.sector_beamwidth_deg === undefined) {
+    return 'The shore station\u2019s position and bearing have not been entered, so '
+      + 'there is nothing to compute a signal against. Range and bearing from the '
+      + 'sector need no radio telemetry \u2014 only that.';
+  }
   if (link?.active_link === '4g' || link?.active_link === 'ltem') {
     return 'Signal strength is only modelled for the directional link. This says '
       + 'nothing about the cellular bearer currently carrying the data.';

@@ -13,13 +13,7 @@ multipath nulls on calm water. Each of them is a thing an operator will see.
 """
 
 import pytest
-from asket_common.link_budget import (
-    VESSEL_ANTENNA_DIRECTIONAL,
-    Propagation,
-    RadioConfig,
-    ShoreStation,
-    VesselRadio,
-)
+from asket_common.link_budget import Propagation, RadioConfig, ShoreStation
 from asket_sim.core.link import (
     GLASSY_WAVE_HEIGHT_M,
     LINK_NONE,
@@ -29,10 +23,12 @@ from asket_sim.core.link import (
 )
 from asket_sim.core.world import SimWorld, WorldConfig
 
-#: Far enough out that the link has a finite amount of headroom to lose. Beside
-#: the ramp it has about 50 dB and nothing can break it, which is correct and is
-#: why the simulated station stands 900 m off the survey box.
-SURVEY_RANGE_M = 900.0
+#: Far enough out that the link has a finite amount of headroom to lose. With
+#: the datasheet's real sensitivities this link holds ~55 dB beside the ramp
+#: and ~32 dB at 900 m, against a sector whose front-to-back ratio is 25 dB —
+#: so close in, nothing you can do to the antenna can break it. At 2.5 km
+#: there is about 16 dB in hand: a working link with something to lose.
+SURVEY_RANGE_M = 2500.0
 
 
 def station_at_origin(**kwargs) -> LinkConfig:
@@ -68,11 +64,11 @@ def test_the_sample_reports_the_geometry_even_when_it_cannot_report_a_signal():
     it is the number that turns "the link dropped" into "the link is going to
     drop". It must survive the link being gone — that is when it matters."""
     link = settled()
-    dead = link.sample(0, 0.0, -4000.0)
+    dead = link.sample(0, 0.0, -9000.0)
     assert dead.active_link == LINK_NONE
     assert dead.rssi_dbm is None, "no bearer, so no signal to claim"
     assert dead.off_boresight_deg is not None
-    assert dead.distance_m > 3000.0
+    assert dead.distance_m > 8000.0
 
 
 # -- turning out of the sector --------------------------------------------
@@ -180,7 +176,7 @@ def test_throughput_steps_rather_than_sliding():
     link = LinkSim(station_at_origin(), seed=3)   # unfaded, so the steps are clean
     capacities = [
         link.sample(0, 0.0, float(d)).capacity_bytes_per_s
-        for d in range(200, 2600, 25)
+        for d in range(400, 6800, 50)
     ]
     distinct = sorted(set(capacities))
     assert 3 < len(distinct) < len(capacities) / 3, (
@@ -194,8 +190,8 @@ def test_and_then_there_is_no_rung_below_the_bottom_one():
     modulation is followed by nothing at all."""
     link = LinkSim(station_at_origin(), seed=3)
     assert link.cfg.cellular_available is False
-    alive = link.sample(0, 0.0, 2000.0)
-    dead = link.sample(0, 0.0, 3500.0)
+    alive = link.sample(0, 0.0, 4000.0)
+    dead = link.sample(0, 0.0, 9000.0)
     assert alive.active_link == LINK_WIFI
     assert dead.active_link == LINK_NONE
     assert dead.capacity_bytes_per_s == 0.0
@@ -207,7 +203,7 @@ def test_a_cellular_fallback_still_works_where_a_site_has_one():
     config = station_at_origin()
     config.cellular_available = True
     link = LinkSim(config, seed=3)
-    assert link.sample(0, 0.0, 3500.0).active_link != LINK_NONE
+    assert link.sample(0, 0.0, 9000.0).active_link != LINK_NONE
 
 
 # -- multipath -------------------------------------------------------------
@@ -299,36 +295,20 @@ def test_fading_is_still_the_same_whatever_the_step_size():
     assert abs(fine - coarse) < 0.5
 
 
-# -- the boat's own antenna, which nobody has confirmed yet ----------------
+# -- the boat's own antenna, now decided -----------------------------------
 
 
 def test_an_omni_boat_antenna_ignores_heading_entirely():
-    """The default, until the part is confirmed. Heading must not contribute a
-    number we have no grounds for."""
+    """The decision: gain ashore, where the tripod does not move during a line
+    and is cheap to aim; an omni on the boat, which is then free to point
+    wherever the survey does.
+
+    Worth a test rather than a comment because the heading term still exists
+    in the model for the directional case, and it must contribute exactly
+    nothing here — not a small number, nothing."""
     link = settled()
     headings = {
         round(link.sample(0, 0.0, SURVEY_RANGE_M, heading_deg=h).rssi_dbm, 6)
         for h in (0.0, 90.0, 180.0, 270.0)
     }
     assert len(headings) == 1
-
-
-def test_a_forward_facing_directional_antenna_would_break_every_outbound_line():
-    """Worth a test rather than a note, because it is a finding about the boat
-    and not about this code.
-
-    If the HGO turns out to be directional and it is bolted on facing forward,
-    it points away from the shore station for the whole of every outbound
-    survey line — the backlobe's 25 dB, which takes a comfortable link to a
-    dead one. The mounting is then a design decision, not a detail. This test
-    is what makes that visible if somebody switches the default over.
-    """
-    config = station_at_origin(
-        vessel=VesselRadio(antenna=VESSEL_ANTENNA_DIRECTIONAL)
-    )
-    link = LinkSim(config, seed=3)
-    outbound = link.sample(0, 0.0, SURVEY_RANGE_M, heading_deg=0.0)
-    homeward = link.sample(0, 0.0, SURVEY_RANGE_M, heading_deg=180.0)
-
-    assert homeward.active_link == LINK_WIFI
-    assert outbound.active_link == LINK_NONE

@@ -19,6 +19,15 @@ import math
 import time
 from dataclasses import dataclass
 
+from asket_common.geo import LocalOrigin
+from asket_common.link_budget import (
+    Antenna,
+    Propagation,
+    RadioConfig,
+    ShoreStation,
+    VesselRadio,
+)
+
 from asket_common.heading import (
     SOURCE_EKF,
     SOURCE_NONE,
@@ -52,6 +61,53 @@ class LatestMessage:
         return time.monotonic() - self.received_monotonic
 
 
+def _radio_from_config(config: dict):
+    """Build the link budget from ``topics.yaml``, or return nothing.
+
+    Nothing is the honest answer when the station has not been entered. The
+    tripod moves between missions and can be turned by hand mid-mission, so
+    there is no surveyed position to fall back on, and a default one would
+    produce a confident bearing for a station that is somewhere else. Every
+    geometry field then goes out as ``null`` and the panel says the station is
+    not configured, which is true and is actionable.
+
+    This is the interim. These values belong on the mission setup page beside
+    the sonar mounting geometry — see ``docs/open_questions.md`` Q11.
+    """
+    station_cfg = (config.get("shore_station") or {})
+    if not station_cfg.get("configured"):
+        return None, None
+
+    origin = LocalOrigin(
+        lat_deg=float(station_cfg["lat"]), lon_deg=float(station_cfg["lon"])
+    )
+    antenna_cfg = station_cfg.get("antenna") or {}
+    station = ShoreStation(
+        east_m=0.0,
+        north_m=0.0,
+        height_m=float(station_cfg.get("height_m", 2.9)),
+        boresight_deg=float(station_cfg.get("boresight_deg", 0.0)),
+        antenna=Antenna(
+            gain_dbi=float(antenna_cfg.get("gain_dbi", 15.0)),
+            azimuth_beamwidth_deg=float(antenna_cfg.get("azimuth_beamwidth_deg", 120.0)),
+            elevation_beamwidth_deg=float(
+                antenna_cfg.get("elevation_beamwidth_deg", 10.0)
+            ),
+        ),
+    )
+    vessel_cfg = station_cfg.get("vessel_radio") or {}
+    radio = RadioConfig(
+        station=station,
+        vessel=VesselRadio(height_m=float(vessel_cfg.get("height_m", 1.0))),
+        propagation=Propagation(
+            freq_mhz=float(station_cfg.get("freq_mhz", 5500.0)),
+            wave_height_m=float(station_cfg.get("wave_height_m", 0.5)),
+            channel_width_mhz=float(station_cfg.get("channel_width_mhz", 40.0)),
+        ),
+    )
+    return radio, origin
+
+
 class RosSource:
     """Reads real topics. Constructed with an already-created ``rclpy`` node."""
 
@@ -64,6 +120,7 @@ class RosSource:
         self._last_track_utc = 0
         self._publishers: dict[str, object] = {}
         self._service_clients: dict[str, object] = {}
+        self._radio, self._station_origin = _radio_from_config(config)
         self._link = adapters.link_from_measurements("wifi", 1.0, 0.0, 800_000.0)
 
         self._subscribe_all()
@@ -195,8 +252,34 @@ class RosSource:
 
     def set_link_measurement(self, active_link: str, quality: float, rtt_ms: float,
                              capacity: float) -> None:
-        """Fed by the node from whatever link telemetry it has."""
-        self._link = adapters.link_from_measurements(active_link, quality, rtt_ms, capacity)
+        """Fed by the node from whatever link telemetry it has.
+
+        The measurements are kept as measurements. What gets added is the
+        geometry: where the boat is against where the tripod is, and what the
+        link budget says that range should be giving. Same module, same
+        arithmetic as the simulator — the boat's position is the only input
+        that differs, and here it comes from the GNSS fix instead of from a
+        simulated vessel.
+        """
+        self._link = adapters.link_from_measurements(
+            active_link, quality, rtt_ms, capacity,
+            radio=self._radio, **self._vessel_enu(),
+        )
+
+    def _vessel_enu(self) -> dict:
+        """The boat in the station's local ENU frame, or nothing.
+
+        Nothing rather than a zero: the origin is where the tripod stands, so
+        a missing fix defaulting to (0, 0) would put the boat on top of it and
+        report a perfect link. Absence has to stay absence all the way down.
+        """
+        if self._radio is None:
+            return {}
+        vessel = self._vessel_record()
+        if vessel is None:
+            return {}
+        east_m, north_m = self._station_origin.to_enu(vessel.lat, vessel.lon)
+        return {"east_m": east_m, "north_m": north_m}
 
     # -- the DataSource interface -----------------------------------------
 

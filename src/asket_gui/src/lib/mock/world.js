@@ -108,12 +108,14 @@ export const DEFAULTS = {
   hotelLoadW: 85,
   propulsionMaxW: 600,
 
-  // The shore station. 900 m off the survey box rather than 50 m: nobody sets
-  // the tripod up beside the work, and at 50 m the link has ~50 dB of headroom
-  // and nothing can degrade it, so every degraded state this GUI exists to
-  // render was unreachable in the mock. Mirrors DEFAULT_STATION_NORTH_M.
+  // The shore station, 2.5 km off the survey box. Mirrors
+  // DEFAULT_STATION_NORTH_M, and the distance is not arbitrary: with the
+  // datasheet's real sensitivities this link holds ~55 dB of headroom at
+  // 100 m against a sector whose front-to-back ratio is 25 dB, so close in
+  // nothing can degrade it and every degraded state this GUI exists to render
+  // was unreachable in the mock.
   stationEastM: 0,
-  stationNorthM: -900,
+  stationNorthM: -2500,
   stationHeightM: 2.9,
   stationBoresightDeg: 0,
   vesselAntennaHeightM: 1.0,
@@ -551,6 +553,7 @@ export class MockWorld {
       sectorBeamwidthDeg: LB.SHORE_ANTENNA.azimuthBeamwidthDeg,
       vesselOffBoresightDeg: geom.vesselOffBoresightDeg,
       rssiDbm: null,
+      rssiSource: null,
       expectedRssiDbm: null,
       headroomDb: null,
       mcsIndex: null,
@@ -574,28 +577,38 @@ export class MockWorld {
         ? LB.GLASSY_WAVE_HEIGHT_M
         : this.cfg.waveHeightM,
     });
-    const rssi = est.rssiDbm + this.fade;
-    const mcs = LB.selectMcs(rssi);
+    // Fading applies to the path, not to a signal: each modulation transmits
+    // at its own power, so there is no single "the signal" until one has been
+    // picked.
+    const pathGain = est.pathGainDb + this.fade;
+    const mcs = LB.selectMcs(pathGain);
+    const headroom = LB.headroomDb(pathGain);
 
     if (!mcs) {
       // The cliff. One directional link and no cellular fallback assumed, so
       // below the bottom modulation there is nothing — which is the case this
       // interface most needs to handle and the old model could not produce.
-      return { ...base, activeLink: 'none', quality: 0, rttMs: Infinity, capacityBytesPerS: 0 };
+      // Headroom still goes out: "how far past the cliff" is exactly what
+      // somebody wants to know once the link has gone.
+      return {
+        ...base, activeLink: 'none', quality: 0, rttMs: Infinity,
+        capacityBytesPerS: 0, headroomDb: headroom,
+      };
     }
 
-    const quality = LB.qualityFromRssi(rssi);
+    const quality = LB.qualityFromHeadroom(headroom);
     return {
       ...base,
       activeLink: 'wifi',
       quality,
       rttMs: 4 * (1 + 2 * (1 - quality) ** 2),
       capacityBytesPerS: LB.usableBytesPerS(mcs),
-      rssiDbm: rssi,
+      rssiDbm: mcs.txPowerDbm + pathGain,
+      rssiSource: 'measured',
       expectedRssiDbm: est.expectedRssiDbm,
-      headroomDb: LB.headroomDb(rssi),
+      headroomDb: headroom,
       mcsIndex: mcs.index,
-      phyMbps: mcs.phyMbps,
+      phyMbps: LB.phyMbps(mcs),
       multipathDb: est.multipathDb,
     };
   }

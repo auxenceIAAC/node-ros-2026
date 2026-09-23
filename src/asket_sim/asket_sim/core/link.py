@@ -47,7 +47,7 @@ from asket_common.link_budget import (
     RadioConfig,
     ShoreStation,
     headroom_db,
-    quality_from_rssi,
+    quality_from_headroom,
     select_mcs,
 )
 
@@ -99,11 +99,21 @@ GLASSY_WAVE_HEIGHT_M = 0.02
 
 #: Where the tripod stands, in the world's local ENU metres, and which way it
 #: faces. The simulated survey box sits around the origin, so this puts the
-#: work about 900 m offshore — which is both realistic (nobody sets the shore
-#: station up 50 m from the survey area) and necessary: at 50 m the link has
-#: 50 dB of headroom and *nothing* can break it, so every degradation the GUI
-#: is supposed to handle was unreachable in simulation.
-DEFAULT_STATION_NORTH_M = -900.0
+#: work about 2.5 km offshore.
+#:
+#: Chosen so the degraded states are reachable at all. With the datasheet's
+#: real sensitivities this link holds ~32 dB of headroom at 900 m and ~55 dB
+#: at 100 m, and the sector's own front-to-back ratio is 25 dB — so close in,
+#: *nothing you can do to the antenna* can break the link, and every failure
+#: the GUI exists to render was unreachable in simulation. At 2.5 km there is
+#: about 16 dB in hand, which is a working link with something to lose.
+#:
+#: The consequence worth knowing: the multipath nulls are a different part of
+#: the envelope entirely — they live inside ~110 m of the station — so they
+#: are a leaving-and-returning phenomenon, not a survey-range one. Two faults,
+#: two places, and that is the honest shape of this link rather than an
+#: inconvenience.
+DEFAULT_STATION_NORTH_M = -2500.0
 
 
 def _default_radio() -> RadioConfig:
@@ -150,6 +160,12 @@ class LinkSample:
     # -- what the radio actually sees -------------------------------------
     #: None on a bearer this module does not model from physics (4G, LTE-M).
     rssi_dbm: float | None = None
+    #: Where the signal came from: ``"measured"`` here, because the simulator
+    #: has a simulated radio to read. The real vessel has nothing reading its
+    #: radio yet and reports ``"predicted"`` instead, and the panel says which
+    #: — a modelled number shown as a measurement is the lie this interface
+    #: exists to prevent.
+    rssi_source: str | None = None
     #: What this range would give with the antennas pointed at each other and
     #: no sea in the way. The difference is the diagnostic an operator can act
     #: on: a signal that matches its range means you are simply far away.
@@ -266,26 +282,31 @@ class LinkSim:
         radio = self._effective_radio()
         estimate = radio.estimate_at(east_m, north_m, heading_deg)
         geom = estimate.geometry
+        width = radio.propagation.channel_width_mhz
 
-        # Fading is applied to the signal, not to a quality score, so that it
-        # can push the link across a modulation boundary — or over the cliff —
-        # the way real fading does.
-        rssi = estimate.rssi_dbm + self._fade_db
-        mcs = select_mcs(rssi)
+        # Fading is applied to the path, not to a quality score, so that it can
+        # push the link across a modulation boundary — or over the cliff — the
+        # way real fading does. To the path rather than to a signal because
+        # each modulation transmits at a different power, so there is no single
+        # "the signal" until a modulation has been chosen.
+        path_gain = estimate.path_gain_db + self._fade_db
+        mcs = select_mcs(path_gain, width)
+        rssi = (mcs.tx_power_dbm + path_gain) if mcs else None
+        headroom = headroom_db(path_gain, width)
 
         if forced is not None:
             link = forced
         elif mcs is not None:
             link = LINK_WIFI
         elif cfg.cellular_available:
-            link = LINK_4G if rssi > -95.0 else LINK_LTEM
+            link = LINK_4G if headroom > -12.0 else LINK_LTEM
         else:
             link = LINK_NONE
 
         if link == LINK_WIFI and mcs is not None:
-            quality = quality_from_rssi(rssi)
+            quality = quality_from_headroom(headroom)
             rtt = WIFI_BASE_RTT_MS * (1.0 + 2.0 * (1.0 - quality) ** 2)
-            capacity = mcs.usable_bytes_per_s
+            capacity = mcs.usable_bytes_per_s(width)
         elif link == LINK_NONE:
             quality, rtt, capacity = 0.0, float("inf"), 0.0
         else:
@@ -308,10 +329,15 @@ class LinkSim:
             capacity_bytes_per_s=capacity,
             distance_m=geom.range_m,
             rssi_dbm=rssi if link == LINK_WIFI else None,
+            rssi_source="measured" if link == LINK_WIFI else None,
             expected_rssi_dbm=estimate.expected_rssi_dbm if link == LINK_WIFI else None,
-            headroom_db=headroom_db(rssi) if link == LINK_WIFI else None,
+            # Headroom survives the bearer going: "how far past the cliff" is
+            # exactly what somebody wants to know once the link has gone, and
+            # a null there would make a lost link indistinguishable from one
+            # that was never configured.
+            headroom_db=headroom if link in (LINK_WIFI, LINK_NONE) else None,
             mcs_index=mcs.index if mcs else None,
-            phy_mbps=mcs.phy_mbps if mcs else None,
+            phy_mbps=mcs.phy_mbps(width) if mcs else None,
             off_boresight_deg=geom.off_boresight_deg,
             sector_beamwidth_deg=radio.station.antenna.azimuth_beamwidth_deg,
             vessel_off_boresight_deg=geom.vessel_off_boresight_deg,

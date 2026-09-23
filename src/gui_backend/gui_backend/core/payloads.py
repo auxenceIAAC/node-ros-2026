@@ -364,6 +364,14 @@ def link_payload(sample, profile: str, profile_manual: bool, clients: int,
                 # physics, and None is the honest answer there rather than a
                 # zero that would read as "no signal".
                 "rssi_dbm": _f(getattr(sample, "rssi_dbm", None), 1),
+                # "measured" or "predicted". A modelled signal shown as though
+                # it were read off the radio is exactly the lie this interface
+                # exists to prevent, so the panel is told which it has. Nothing
+                # reads the radio yet, so on the real vessel this is
+                # "predicted"; in simulation there is a simulated radio, so it
+                # is "measured" — of a simulated thing, which the dev panel is
+                # never in any doubt about.
+                "rssi_source": getattr(sample, "rssi_source", None),
                 "expected_rssi_dbm": _f(getattr(sample, "expected_rssi_dbm", None), 1),
                 "headroom_db": _f(getattr(sample, "headroom_db", None), 1),
                 "mcs_index": _opt_int(getattr(sample, "mcs_index", None)),
