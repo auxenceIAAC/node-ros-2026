@@ -16,6 +16,15 @@ export function LinkStatus({ state, connection }) {
   const degraded = Object.values(state.subscriptions).filter((s) => s.reason);
 
   const quality = link?.quality;
+  // Half the quoted beamwidth: the angle at which the boat reaches the edge of
+  // the sector. Absent rather than zero when the backend did not send it —
+  // zero would draw as "dead centre", which is a claim.
+  const sector =
+    link?.off_boresight_deg === undefined
+    || link?.off_boresight_deg === null
+    || !link?.sector_beamwidth_deg
+      ? null
+      : { off: link.off_boresight_deg, halfWidth: link.sector_beamwidth_deg / 2 };
   const level =
     !state.connected || link?.active_link === 'none'
       ? 'alarm'
@@ -64,6 +73,58 @@ export function LinkStatus({ state, connection }) {
         <Row label="This client">≈ {bytes(state.estimatedBytesPerS)}/s</Row>
       </Rows>
 
+      {/*
+        The radio, and the geometry behind it.
+
+        Headroom is measured against the point at which the link is lost, not
+        against the next modulation step. Rate steps are invisible to an
+        operator and they cannot act on them; how much signal they can afford
+        to lose before the link goes is the number they can.
+
+        Range is shown beside signal on purpose. On a directional link over
+        water the two belong together: a weak signal that matches its range
+        means the boat is simply far out, and a weak signal at short range
+        means something else — alignment, an obstruction, or a multipath null
+        that will return at the same distance on the next pass.
+      */}
+      <Rows>
+        <Row label="Signal">
+          {link?.rssi_dbm === undefined || link?.rssi_dbm === null ? (
+            <span className="dim-value" title={rssiTitle(link)}>not reported</span>
+          ) : (
+            <>
+              {num(link.rssi_dbm, 0, ' dBm')}
+              <span className="hint">
+                {' '}
+                — {num(link.headroom_db, 0, ' dB')} before the link goes
+              </span>
+            </>
+          )}
+        </Row>
+        <Row label="Range">{num(link?.distance_m, 0, ' m')}</Row>
+        <Row label="Rate">
+          {link?.mcs_index === undefined || link?.mcs_index === null
+            ? <span className="dim-value">not reported</span>
+            : `MCS${link.mcs_index} — ${num(link.phy_mbps, 0, ' Mbit/s')}`}
+        </Row>
+        {/*
+          Pure geometry: boat position against the station's position and
+          bearing. It needs nothing from the radio, so it survives the radio
+          telling us nothing — and it is the one number here that says what is
+          *about* to happen rather than what already has. A boat working toward
+          the edge of the sector is a tripod somebody can turn before the link
+          goes, rather than after.
+        */}
+        {sector && (
+          <Row label="In the sector">
+            <span title={SECTOR_TITLE}>
+              {num(Math.abs(sector.off), 0, '°')} of {num(sector.halfWidth, 0, '°')}
+            </span>
+            <span className="hint"> {sector.off >= 0 ? 'right' : 'left'} of centre</span>
+          </Row>
+        )}
+      </Rows>
+
       <p className="hint" style={{ marginTop: 6, marginBottom: 6 }}>
         {profile.reason}
       </p>
@@ -106,4 +167,17 @@ export function LinkStatus({ state, connection }) {
       )}
     </Panel>
   );
+}
+
+const SECTOR_TITLE =
+  'Where the boat sits in the shore antenna\u2019s beam, worked out from its '
+  + 'position and the station\u2019s. Past the edge the signal falls away '
+  + 'quickly; turn the tripod before that rather than after.';
+
+function rssiTitle(link) {
+  if (link?.active_link === '4g' || link?.active_link === 'ltem') {
+    return 'Signal strength is only modelled for the directional link. This says '
+      + 'nothing about the cellular bearer currently carrying the data.';
+  }
+  return 'No signal to report: there is no link to the shore station.';
 }

@@ -360,6 +360,27 @@ def link_payload(sample, profile: str, profile_manual: bool, clients: int,
                 "rate_bytes_per_s": _f(rate_bytes_per_s, 0),
                 "connected_clients": int(clients),
                 "distance_m": _f(sample.distance_m, 0),
+                # What the radio sees. None on a bearer we do not model from
+                # physics, and None is the honest answer there rather than a
+                # zero that would read as "no signal".
+                "rssi_dbm": _f(getattr(sample, "rssi_dbm", None), 1),
+                "expected_rssi_dbm": _f(getattr(sample, "expected_rssi_dbm", None), 1),
+                "headroom_db": _f(getattr(sample, "headroom_db", None), 1),
+                "mcs_index": _opt_int(getattr(sample, "mcs_index", None)),
+                "phy_mbps": _f(getattr(sample, "phy_mbps", None), 1),
+                # Geometry, which needs no radio telemetry at all. This is the
+                # half that survives the MikroTik exposing nothing we can read,
+                # and it is the half that turns "the link dropped" into "the
+                # link is going to drop".
+                "off_boresight_deg": _f(getattr(sample, "off_boresight_deg", None), 1),
+                "sector_beamwidth_deg": _f(
+                    getattr(sample, "sector_beamwidth_deg", None), 0
+                ),
+                "vessel_off_boresight_deg": _f(
+                    getattr(sample, "vessel_off_boresight_deg", None), 1
+                ),
+                "multipath_db": _f(getattr(sample, "multipath_db", None), 1),
+                "sea_state_m": _f(getattr(sample, "sea_state_m", None), 2),
             }
         )
     return out

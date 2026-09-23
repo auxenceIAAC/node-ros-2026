@@ -11,14 +11,24 @@
 //  * a magnetometer whose error grows with throttle, which is the real failure
 //    mode on this hull and the reason the heading panel exists;
 //  * a Pico that takes time to confirm a mode change, and can fail to;
-//  * a link whose quality falls off with distance from the shore station;
+//  * a link built from a real budget — sector pattern, path loss, the
+//    modulation staircase and the cliff under it — so it fails the way a
+//    directional link over water actually fails, which is suddenly;
 //  * a coverage ribbon that stops during turns, sonar dropouts and heading
 //    loss, so gaps on the map are real gaps.
 //
 // What it deliberately does not model is anything the GUI cannot see. There is
 // no hydrodynamics here, and there does not need to be.
 
+import * as LB from './linkBudget.js';
+
 const METRES_PER_DEG_LAT = (Math.PI * 6371008.8) / 180;
+
+// Mirrors ALIGNMENT_LOST_DEG / ALIGNMENT_SLEW_DEG_PER_S in asket_sim/core/link.py.
+// A full reversal, because a 120-degree sector with 19 dB in hand shrugs off a
+// nudge — see the note there; it is a finding about the gear, not a tuning.
+const ALIGNMENT_LOST_DEG = 180;
+const ALIGNMENT_SLEW_DEG_PER_S = 90;
 
 export const MODE_ESTOP = 0;
 export const MODE_MANUAL = 1;
@@ -98,9 +108,16 @@ export const DEFAULTS = {
   hotelLoadW: 85,
   propulsionMaxW: 600,
 
+  // The shore station. 900 m off the survey box rather than 50 m: nobody sets
+  // the tripod up beside the work, and at 50 m the link has ~50 dB of headroom
+  // and nothing can degrade it, so every degraded state this GUI exists to
+  // render was unreachable in the mock. Mirrors DEFAULT_STATION_NORTH_M.
   stationEastM: 0,
-  stationNorthM: -50,
-  wifiRangeM: 400,
+  stationNorthM: -900,
+  stationHeightM: 2.9,
+  stationBoresightDeg: 0,
+  vesselAntennaHeightM: 1.0,
+  waveHeightM: 0.5,
 
   sonarRangeM: 30,
   sonarGain: 4,
@@ -167,6 +184,7 @@ export class MockWorld {
     this.velocity = { e: 0, n: 0 };
     this.magWalk = 0;
     this.fade = 0;
+    this.alignmentErrorDeg = 0;
 
     this.mode = MODE_MANUAL;
     this.armed = false;
@@ -360,7 +378,22 @@ export class MockWorld {
     // "slow" fade run as fast as whatever happens to sample it.
     const tau = 12;
     const decay = Math.exp(-dt / tau);
-    this.fade = decay * this.fade + gauss(this.random, 0.06 * Math.sqrt(1 - decay * decay));
+    // In decibels, like the Python, so a fade can push the link across a
+    // modulation boundary rather than nudging an abstract quality score.
+    this.fade = decay * this.fade + gauss(this.random, 1.5 * Math.sqrt(1 - decay * decay));
+
+    // The tripod slews rather than teleporting, so the collapse has a shape.
+    // The GUI has to be right about the second in the middle, not only about
+    // the two ends.
+    const target = this.hasFault('link_alignment_lost') ? ALIGNMENT_LOST_DEG : 0;
+    const delta = target - this.alignmentErrorDeg;
+    if (delta !== 0) {
+      const travel = ALIGNMENT_SLEW_DEG_PER_S * dt;
+      this.alignmentErrorDeg =
+        Math.abs(delta) <= travel
+          ? target
+          : this.alignmentErrorDeg + Math.sign(delta) * travel;
+    }
   }
 
   #stepSonar(dt) {
@@ -481,34 +514,90 @@ export class MockWorld {
     return Math.max(0, this.cfg.diskTotalBytes - this.diskUsedBytes);
   }
 
-  /** Distance from the shore station, which is what the link quality follows. */
-  distanceFromStationM() {
-    return Math.hypot(this.east - this.cfg.stationEastM, this.north - this.cfg.stationNorthM);
+  /** The tripod, wherever the faults have left it pointing. */
+  #station() {
+    return {
+      eastM: this.cfg.stationEastM,
+      northM: this.cfg.stationNorthM,
+      heightM: this.cfg.stationHeightM,
+      boresightDeg: this.cfg.stationBoresightDeg + this.alignmentErrorDeg,
+      antenna: LB.SHORE_ANTENNA,
+    };
   }
 
-  link() {
-    if (this.hasFault('link_loss')) {
-      return { activeLink: 'none', quality: 0, rttMs: Infinity, capacityBytesPerS: 0 };
-    }
-    const distance = this.distanceFromStationM();
-    let wifi = Math.max(0, 1 - (distance / this.cfg.wifiRangeM) ** 1.6) + this.fade;
-    wifi = Math.max(0, Math.min(1, wifi));
+  /** Slant range to the shore station. */
+  distanceFromStationM() {
+    return LB.geometry(
+      this.#station(), this.east, this.north, this.cfg.vesselAntennaHeightM,
+    ).rangeM;
+  }
 
+  /**
+   * The shore link.
+   *
+   * Every number below the bearer name comes from the link budget rather than
+   * from a curve fitted to look plausible, because the panel is about to show
+   * decibels and an operator is going to make decisions on them. The geometry
+   * half — bearing from the sector's boresight — is reported even when there is
+   * no link at all, which is exactly when it is worth having.
+   */
+  link() {
+    const geom = LB.geometry(
+      this.#station(), this.east, this.north, this.cfg.vesselAntennaHeightM,
+    );
+    const base = {
+      distanceM: geom.rangeM,
+      offBoresightDeg: geom.offBoresightDeg,
+      sectorBeamwidthDeg: LB.SHORE_ANTENNA.azimuthBeamwidthDeg,
+      vesselOffBoresightDeg: geom.vesselOffBoresightDeg,
+      rssiDbm: null,
+      expectedRssiDbm: null,
+      headroomDb: null,
+      mcsIndex: null,
+      phyMbps: null,
+      multipathDb: null,
+      seaStateM: this.hasFault('link_glassy_water')
+        ? LB.GLASSY_WAVE_HEIGHT_M
+        : this.cfg.waveHeightM,
+    };
+
+    if (this.hasFault('link_loss')) {
+      return { ...base, activeLink: 'none', quality: 0, rttMs: Infinity, capacityBytesPerS: 0 };
+    }
     if (this.hasFault('link_degraded')) {
-      return { activeLink: '4g', quality: 0.55, rttMs: 180, capacityBytesPerS: 90000 };
+      return { ...base, activeLink: '4g', quality: 0.55, rttMs: 180, capacityBytesPerS: 90000 };
     }
-    if (wifi > 0.25) {
-      return {
-        activeLink: 'wifi',
-        quality: wifi,
-        rttMs: 25 * (1 + 2 * (1 - wifi) ** 2),
-        capacityBytesPerS: 800000 * Math.max(0.05, wifi),
-      };
+
+    const est = LB.estimate(this.#station(), this.east, this.north, {
+      vesselHeightM: this.cfg.vesselAntennaHeightM,
+      waveHeightM: this.hasFault('link_glassy_water')
+        ? LB.GLASSY_WAVE_HEIGHT_M
+        : this.cfg.waveHeightM,
+    });
+    const rssi = est.rssiDbm + this.fade;
+    const mcs = LB.selectMcs(rssi);
+
+    if (!mcs) {
+      // The cliff. One directional link and no cellular fallback assumed, so
+      // below the bottom modulation there is nothing — which is the case this
+      // interface most needs to handle and the old model could not produce.
+      return { ...base, activeLink: 'none', quality: 0, rttMs: Infinity, capacityBytesPerS: 0 };
     }
-    if (wifi > 0.02) {
-      return { activeLink: '4g', quality: 0.5, rttMs: 160, capacityBytesPerS: 90000 };
-    }
-    return { activeLink: 'ltem', quality: 0.2, rttMs: 1400, capacityBytesPerS: 1000 };
+
+    const quality = LB.qualityFromRssi(rssi);
+    return {
+      ...base,
+      activeLink: 'wifi',
+      quality,
+      rttMs: 4 * (1 + 2 * (1 - quality) ** 2),
+      capacityBytesPerS: LB.usableBytesPerS(mcs),
+      rssiDbm: rssi,
+      expectedRssiDbm: est.expectedRssiDbm,
+      headroomDb: LB.headroomDb(rssi),
+      mcsIndex: mcs.index,
+      phyMbps: mcs.phyMbps,
+      multipathDb: est.multipathDb,
+    };
   }
 
   /** How far is left to drive, for the power panel's endurance comparison. */

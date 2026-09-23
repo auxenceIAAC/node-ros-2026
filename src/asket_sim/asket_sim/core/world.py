@@ -22,7 +22,15 @@ from asket_common.survey import SIDE_STARBOARD, SurveyPlan
 from .battery import BatteryConfig, BatterySample, BatterySim
 from .faults import FaultInjector
 from .lidar import LidarConfig, LidarScan, LidarSim, Obstacle
-from .link import LINK_4G, LINK_NONE, LinkConfig, LinkSample, LinkSim
+from .link import (
+    ALIGNMENT_LOST_DEG,
+    GLASSY_WAVE_HEIGHT_M,
+    LINK_4G,
+    LINK_NONE,
+    LinkConfig,
+    LinkSample,
+    LinkSim,
+)
 from .pico import PicoConfig, PicoSample, PicoSim
 from .sonar import PingSet, SeabedConfig, SonarSim, SonarSimConfig
 from .vessel import VesselConfig, VesselSample, VesselSim
@@ -185,6 +193,16 @@ class SimWorld:
         if f.active("disk_full"):
             self.disk_used_bytes = self.cfg.disk_total_bytes - 8 * 1024**2
 
+        # The shore antenna and the weather. Both are set every tick rather
+        # than on the fault's edges: a fault that is injected, cleared and
+        # injected again must not leave the tripod pointing somewhere nobody
+        # asked for.
+        self.link.set_alignment_error(
+            ALIGNMENT_LOST_DEG if f.active("link_alignment_lost") else 0.0
+        )
+        self.link.set_sea_state(GLASSY_WAVE_HEIGHT_M
+                                if f.active("link_glassy_water") else None)
+
     def _forced_link(self) -> str | None:
         if self.faults.active("link_loss"):
             return LINK_NONE
@@ -240,7 +258,10 @@ class SimWorld:
             vessel=vessel,
             pico=self.pico.sample(utc),
             battery=self.battery.sample(utc),
-            link=self.link.sample(utc, vessel.east_m, vessel.north_m, self._forced_link()),
+            link=self.link.sample(
+                utc, vessel.east_m, vessel.north_m, self._forced_link(),
+                heading_deg=vessel.heading_deg,
+            ),
             lidar=self._last_lidar,
             ping=self._last_ping,
             sonar_pitch_deg=pitch,

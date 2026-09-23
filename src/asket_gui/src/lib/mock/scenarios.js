@@ -48,6 +48,39 @@ export const SCENARIOS = [
           + 'age, rather than blanking — the last known position is most valuable exactly '
           + 'when the link has gone.',
       },
+      {
+        id: 'link_alignment_lost',
+        label: 'Antenna alignment lost',
+        kind: 'fault',
+        detail:
+          'Somebody swings the shore sector off its bearing and the boat falls out of the '
+          + 'beam over about two seconds. This is the failure this hardware actually has: '
+          + 'a directional link over water does not fade, it works and then it stops, and '
+          + 'a feed that was crisp a second ago and is now frozen is far more deceptive '
+          + 'than one that was always marginal.\n\n'
+          + 'Watch the order it happens in. Signal and headroom fall first, the modulation '
+          + 'steps down, throughput drops in jumps rather than sliding, and only then does '
+          + 'the bearer go. Every panel should be visibly stale before anything blanks.\n\n'
+          + 'It does nothing while the boat is near the station: a 120-degree sector with '
+          + '19 dB in hand shrugs off a nudge, and the backlobe still carries several '
+          + 'megabits close in. That is correct rather than a limitation — the thing that '
+          + 'takes this link away is range, not a knock. Let the boat get out to the '
+          + 'survey box first.',
+      },
+      {
+        id: 'link_glassy_water',
+        label: 'Glassy water (multipath)',
+        kind: 'fault',
+        detail:
+          'The sea goes flat, the surface reflection survives instead of scattering, and '
+          + 'the two paths cancel at fixed ranges — about 106 m, then 53 m, then 35 m with '
+          + 'the antennas where they are.\n\n'
+          + 'The boat drives a straight line at constant speed and the link drops out and '
+          + 'comes back. It looks exactly like a fault and it is not one, which is why the '
+          + 'panel shows range alongside signal: a hole that returns at the same distance '
+          + 'every pass is geometry, not gear.\n\n'
+          + 'A calm morning inshore. Any swell at all fills the nulls in.',
+      },
     ],
   },
   {

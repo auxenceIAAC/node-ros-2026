@@ -17,6 +17,19 @@ from dataclasses import dataclass, field
 FAULTS = {
     "link_loss": "Shore link drops entirely.",
     "link_degraded": "Shore link falls back to 4G-grade latency and bandwidth.",
+    "link_alignment_lost": (
+        "The shore sector is swung right off its bearing and the boat falls "
+        "out of the beam over about two seconds. Deliberately a large error: a "
+        "120-degree sector with 19 dB in hand shrugs off a nudge, so a small "
+        "knock is not what takes this link away. Does nothing beside the ramp, "
+        "where the antenna's backlobe still carries several megabits — that is "
+        "correct, and `link_loss` is the fault for 'nothing arrives'."
+    ),
+    "link_glassy_water": (
+        "The sea goes flat and the surface reflection survives, putting deep "
+        "multipath nulls at fixed ranges (~106 m, 53 m, 35 m with the current "
+        "antenna heights). A calm morning inshore, not a fault in the gear."
+    ),
     "sonar_dropout": "Sonar stops producing pings without closing the socket.",
     "sonar_packet_loss": "Sonar packets are lost intermittently.",
     "clock_drift": "Sonar clock drifts away from the Jetson's; ruins post-fusion.",
