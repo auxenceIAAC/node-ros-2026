@@ -241,6 +241,7 @@ mean anything for it?**
 |---|---|
 | `sonar.mounting` | Every sounding carries the same unknown offset, and it looks entirely plausible until somebody overlays a second survey. There is no "the mounting is not in use". |
 | `sonar.clock` | A wrong sonar clock makes the whole mission un-georeferenceable. If the sonar is in use, its clock is in use. |
+| `clock.gps_offset` | The hop before it, and nothing was checking it. Both clocks can agree with each other perfectly and both be wrong — the sonar log and the trajectory then merge without complaint into a survey that sits in the wrong place in time. **Measures drift, not daemon lock**: a cold GPS start can take ten minutes and that is a reason to wait, not to fail. One second of tolerance. |
 | `gnss.fix` | Nothing on this boat works without position, and a survey recorded on a poor fix is junk that looks like data. There is no "GNSS not in use". |
 | `heading.valid` | The swath is placed by heading. Invalid heading is silently displaced data. |
 | `rc.link` | **The safety chain.** The transmitter is how a human takes the boat back. Not waivable under any circumstance, in any mode, at any range. |
@@ -368,14 +369,31 @@ is the honest place for it.
 ## Where I would argue with myself
 
 **1. Writing config that needs a restart is a trap with a new coat of paint.**
-Nodes read their YAML at startup. A value entered on the page does not take
-effect until `omniscan_bridge` restarts, so the page must either say so and
-offer to restart, or push through ROS parameters. I would take the first —
-explicit, with the check still reading reported provenance — but I do not like
-it: the page will sometimes have to tell somebody that what they just did has
-not happened yet. The alternative is worse (a live parameter push that half
-succeeds), but this is the weakest part of the design and I would want it
-looked at rather than waved through.
+*Resolved, and better than the version that was worrying me.* Nodes read their
+YAML at startup, so a value saved on the page is not necessarily the value the
+vessel is running on — and a page that writes a file and says "done" while the
+node carries on with the old lever arm is the same failure as a pre-flight
+warning naming a YAML nobody can open. It looks finished, and it is not.
+
+So every field now declares **when it takes effect** — `immediately`,
+`on_reload`, or `on_restart` — the page says it *per field*, and where the
+vessel can be made to pick a value up, the page offers to do it.
+
+For the mounting geometry, which is the group that matters, it is a **reload
+rather than a restart**: `load_mounting` is a pure function returning a
+dataclass, so `omniscan_bridge` gained a `~/reload_mounting` service that
+swaps the result. No downtime, no dropped sonar connection, and — the
+important part — the provenance the node *reports* moves with it, so the
+pre-flight goes green only when the bridge confirms. Editing the file alone
+still cannot turn the check green, which was always the right behaviour and
+matters more now that a form can do the writing.
+
+A reload that finds a broken file is **refused and not applied**: falling back
+to defaults there would silently discard a measurement somebody had just made,
+which is the worst outcome available. The service reports what is in use
+afterwards rather than merely that the file was read — "reloaded" would be
+true and useless to somebody who wants to know whether the numbers they just
+measured are the numbers the sonar is placed by.
 
 **2. `channel_width_mhz` is in the wrong tier, probably.** It is radio
 configuration, which is Vessel by the equipment axis — but it changes with

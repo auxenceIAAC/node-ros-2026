@@ -26,6 +26,10 @@ HEALTHY = dict(
     lidar_rotation_hz=10.0, lidar_points_per_revolution=400,
     sonar_connected=True, sonar_ping_rate_hz=5.0, sonar_points_per_ping=256,
     clock_offset_ms=12,
+    # The Jetson's own clock against GPS time. A healthy vessel is
+    # disciplined; the check that reads this measures drift rather than
+    # asking whether the NTP daemon says it is locked.
+    gps_time_offset_ms=40, gps_time_age_s=1.0,
     disk_free_bytes=200 * 1024**3, disk_write_mbps=120.0,
     state_of_charge=0.9, battery_voltage=28.0,
     link_rtt_ms=25.0, link_active="wifi",

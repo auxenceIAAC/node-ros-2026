@@ -95,6 +95,19 @@ class Thresholds:
     min_sonar_ping_rate_hz: float = 1.0
     min_sonar_points: int = 32
     max_clock_offset_ms: int = 250
+    #: How far the Jetson's own clock may sit from GPS time before a survey
+    #: recorded on it is worthless. One second.
+    #:
+    #: Deliberately generous, and deliberately a *drift* threshold rather than
+    #: a question about whether the NTP daemon is currently locked. A daemon
+    #: that has not yet achieved lock on a cold GPS start is not a reason to
+    #: refuse a mission — a clock that is wrong is. If the clock is right, it
+    #: does not matter how it got there.
+    max_gps_offset_ms: int = 1000
+    #: How old a GPS time reference may be before it says nothing about the
+    #: clock now. A reference from five minutes ago cannot report on a drift
+    #: that started four minutes ago.
+    max_gps_time_age_s: float = 30.0
     min_disk_free_bytes: int = 20 * 1024**3
     min_disk_write_mbps: float = 20.0
     max_link_rtt_ms: float = 400.0
@@ -545,6 +558,93 @@ def _sonar(state: dict, t: Thresholds) -> CheckResult:
         "sonar.link", "Sonar", PASS,
         f"{rate:.1f} Hz, {points} points per ping" if rate is not None else "Connected",
         "", rate if rate is not None else float("nan"), "Hz",
+    )
+
+
+@check("clock.gps_offset", "Jetson clock against GPS", critical=True)
+def _gps_clock(state: dict, t: Thresholds) -> CheckResult:
+    """Is the Jetson's own clock right?
+
+    The hop before ``sonar.clock``, and the one nothing was checking. The
+    chain is:
+
+        GPS time -> (NTP daemon) -> Jetson clock -> (NTP) -> sonar clock
+
+    ``sonar.clock`` covers the second arrow. Without this check the two clocks
+    can agree with each other perfectly and both be wrong, which is the worst
+    possible shape for the failure: the sonar log and the trajectory merge
+    without complaint and the whole survey sits in the wrong place in time.
+    Nobody finds out until somebody tries to tie it to anything external.
+
+    **This measures drift, not whether the daemon says it is locked.** A cold
+    GPS start on a Namibian beach can take ten minutes, and a daemon that has
+    not yet converged is not a reason to refuse a mission — a clock that is
+    wrong is. If the clock is right, how it got there is nobody's business. So
+    the wait, when there is one, is a wait for a *fix*, which ``gnss.fix``
+    reports in its own words.
+    """
+    offset = state.get("gps_time_offset_ms")
+    age_s = state.get("gps_time_age_s")
+    fix_type = state.get("gnss_fix_type")
+
+    if fix_type is None:
+        # Nothing is reporting position at all, so there is no fix to say
+        # there is no fix about. Unknown, reported as unknown — the file's own
+        # first principle, and the alternative reads as a specific fault
+        # ("no GPS time reference") when the real situation is that nothing
+        # is running.
+        return _missing(
+            "clock.gps_offset", "Jetson clock against GPS", "no position messages",
+        )
+
+    if fix_type < 3:
+        # No fix, so no GPS time, so nothing to compare against. Reported as
+        # unknown rather than failed: `gnss.fix` already carries this and
+        # saying it twice in different words sends somebody looking for two
+        # problems.
+        return CheckResult(
+            "clock.gps_offset", "Jetson clock against GPS", SKIPPED,
+            "No GPS fix yet, so the clock cannot be checked against one",
+            "Wait for the fix — see the GNSS check. The clock is not known to "
+            "be wrong; it is not yet known to be right.",
+        )
+
+    if offset is None:
+        # There is a fix and still no time reference. Something in the path
+        # that carries GPS time is not working, and a survey would be recorded
+        # on a clock nobody has verified — which is what this check exists to
+        # prevent, so it fails rather than shrugging.
+        return CheckResult(
+            "clock.gps_offset", "Jetson clock against GPS", FAIL,
+            "No GPS time reference, so the Jetson's clock is unverified",
+            "There is a fix but nothing is publishing GPS time "
+            "(/mavros/time_reference). Everything recorded would be timed by "
+            "a clock nobody has checked. See docs/SETUP.md section 1.",
+        )
+
+    if age_s is not None and age_s > t.max_gps_time_age_s:
+        return CheckResult(
+            "clock.gps_offset", "Jetson clock against GPS", FAIL,
+            f"The last GPS time reference is {age_s:.0f} s old",
+            "A reference that old says nothing about the clock now. Check "
+            "that the GPS is still publishing time.",
+            age_s, "s",
+        )
+
+    if abs(offset) > t.max_gps_offset_ms:
+        return CheckResult(
+            "clock.gps_offset", "Jetson clock against GPS", FAIL,
+            f"The Jetson's clock is {offset / 1000.0:+.1f} s from GPS time",
+            "Every point recorded would be placed at the wrong moment, and "
+            "the sonar log and the trajectory would merge without complaint "
+            "into a dataset that is simply wrong. Check the GPS-disciplined "
+            "NTP server on the Jetson — docs/SETUP.md section 1.",
+            offset, "ms",
+        )
+
+    return CheckResult(
+        "clock.gps_offset", "Jetson clock against GPS", PASS,
+        f"Within {abs(offset)} ms of GPS time", "", offset, "ms",
     )
 
 

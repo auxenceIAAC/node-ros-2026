@@ -129,6 +129,30 @@ FROM_VESSEL_BEARING = "from_vessel_bearing"
 FROM_FIRST_FIX = "from_first_fix"
 
 
+# -- when a value actually starts being used -------------------------------
+#
+# The weakest part of this whole design, named rather than hidden. ROS nodes
+# read their configuration at startup, so a value saved on the page may not be
+# the value the vessel is running on — and a page that writes a file and says
+# "done" while the node uses the old numbers is precisely the class of problem
+# the page was built to fix. It would be worse than the SSH session it
+# replaces, because it also destroys the operator's reason to doubt.
+#
+# So every field says when it takes effect, the page says it per field, and
+# where the vessel can be made to pick a value up, the page offers to do it
+# rather than telling somebody to open a terminal.
+
+#: Read live. Nothing to do.
+IMMEDIATELY = "immediately"
+#: The owning node can be told to re-read it, without restarting the process.
+#: `reload_service` names the service that does it.
+ON_RELOAD = "on_reload"
+#: The process has to be restarted, and this page cannot do that. Said
+#: plainly rather than implied — the operator needs to know the value they
+#: just entered is not yet in use.
+ON_RESTART = "on_restart"
+
+
 @dataclass(frozen=True)
 class FieldSpec:
     """One thing somebody has to tell the vessel."""
@@ -150,6 +174,14 @@ class FieldSpec:
     supplied: str = BY_HAND
     #: For BY_CHOICE fields, the words on offer.
     choices: tuple[str, ...] = ()
+    #: When a newly saved value starts being used. See the constants above.
+    takes_effect: str = IMMEDIATELY
+    #: Which node reads it. Named so the page can say "the sonar bridge" and
+    #: not "some node".
+    applied_by: str = "gui_backend"
+    #: The service that makes the owning node re-read it, for ON_RELOAD
+    #: fields. Empty otherwise.
+    reload_service: str = ""
 
     @property
     def goes_stale(self) -> bool:
@@ -187,6 +219,9 @@ def _mounting(name: str, label: str, default: float, units: str) -> FieldSpec:
             "overlays a second one."
         ),
         silently_corrupts=True,
+        takes_effect=ON_RELOAD,
+        applied_by="omniscan_bridge",
+        reload_service="/omniscan_bridge/reload_mounting",
     )
 
 
@@ -212,6 +247,9 @@ FIELDS: tuple[FieldSpec, ...] = (
         silently_corrupts=True,
         supplied=BY_CHOICE,
         choices=("port", "starboard"),
+        takes_effect=ON_RELOAD,
+        applied_by="omniscan_bridge",
+        reload_service="/omniscan_bridge/reload_mounting",
     ),
     FieldSpec(
         id="vessel.battery.capacity_wh",
@@ -430,6 +468,41 @@ class Outstanding:
 
 
 @dataclass(frozen=True)
+class PendingEffect:
+    """A saved value that the vessel is not using yet, and how to change that.
+
+    Grouped by the action needed rather than listed per field, because a
+    tape-measure session changes seven mounting numbers at once and seven
+    identical "reload the sonar bridge" lines is seven chances to read past
+    the one that matters.
+    """
+
+    takes_effect: str
+    applied_by: str
+    reload_service: str
+    field_ids: tuple[str, ...]
+
+    @property
+    def can_be_applied_from_here(self) -> bool:
+        return self.takes_effect == ON_RELOAD and bool(self.reload_service)
+
+    def sentence(self) -> str:
+        """What the page says. One sentence, in the operator's terms."""
+        count = len(self.field_ids)
+        noun = "value" if count == 1 else f"{count} values"
+        subject = f"{'This ' + noun if count == 1 else noun}"
+        if self.takes_effect == ON_RELOAD:
+            return (
+                f"{subject} saved, but {self.applied_by} is still using the "
+                f"old {'one' if count == 1 else 'ones'} until it re-reads them."
+            )
+        return (
+            f"{subject} saved, but {self.applied_by} reads this at startup and "
+            "has not been restarted. This page cannot restart it."
+        )
+
+
+@dataclass(frozen=True)
 class Stale:
     """A Deployment value old enough to be worth looking at again."""
 
@@ -570,6 +643,36 @@ class SetupProfile:
                 out.append(Stale(spec, entry, age))
         out.sort(key=lambda s: -s.age_ms)
         return out
+
+    def pending_effects(self, field_ids: list[str] | tuple[str, ...]) -> list[PendingEffect]:
+        """What the vessel is not using yet, out of what was just saved.
+
+        The page calls this straight after a save and shows the result before
+        anything else. A page that writes a file and says "done" while the
+        node runs on the old values is the same failure as a pre-flight
+        warning naming a YAML nobody can open: it looks like the job is
+        finished, and it is not.
+
+        Fields read live produce nothing here, which is the common case and
+        should stay silent.
+        """
+        groups: dict[tuple[str, str, str], list[str]] = {}
+        for field_id in field_ids:
+            spec = FIELD_BY_ID.get(field_id)
+            if spec is None or spec.takes_effect == IMMEDIATELY:
+                continue
+            key = (spec.takes_effect, spec.applied_by, spec.reload_service)
+            groups.setdefault(key, []).append(field_id)
+
+        return [
+            PendingEffect(takes_effect, applied_by, reload_service, tuple(sorted(ids)))
+            # Reload-able first: it is the one somebody can act on now, and
+            # burying it under something they cannot do is how a fixable
+            # problem gets treated as a fact of life.
+            for (takes_effect, applied_by, reload_service), ids in sorted(
+                groups.items(), key=lambda kv: (kv[0][0] != ON_RELOAD, kv[0][1])
+            )
+        ]
 
     def headline(self) -> str:
         """The sentence at the top of the page.

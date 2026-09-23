@@ -152,6 +152,22 @@ class OmniscanBridge(Node):
         )
         self.srv_start = self.create_service(Trigger, "~/start_pinging", self._on_start)
         self.srv_stop = self.create_service(Trigger, "~/stop_pinging", self._on_stop)
+        # Re-read the mounting geometry without restarting the process.
+        #
+        # This exists so the setup page can offer to make a measurement take
+        # effect rather than telling somebody to open a terminal. A page that
+        # writes a file and says "done" while this node carries on with the
+        # old lever arm is the same failure as a pre-flight warning naming a
+        # YAML nobody can open — it looks finished and it is not.
+        #
+        # A reload rather than a restart: `load_mounting` is a pure function
+        # returning a dataclass, so swapping the result is cheap, has no
+        # downtime and cannot drop the sonar connection. The provenance this
+        # node REPORTS moves with it, which is what makes the pre-flight check
+        # go green — editing the file alone still cannot.
+        self.srv_reload_mounting = self.create_service(
+            Trigger, "~/reload_mounting", self._on_reload_mounting
+        )
 
         self._pinging = True
         self._min_publish_interval_ns = int(
@@ -476,6 +492,55 @@ class OmniscanBridge(Node):
         ok = self._send_ping_parameters(replace(self.params, ping_enable=True))
         response.success = ok
         response.message = "pinging" if ok else "failed to send to the sonar"
+        return response
+
+    def _on_reload_mounting(self, request, response):
+        """Re-read the mounting file and report what is now in use.
+
+        The response says what the node is using afterwards, not merely that
+        the file was read. "Reloaded" would be true and useless — somebody
+        pressing this wants to know whether the numbers they just measured are
+        the numbers the sonar is now placed by.
+        """
+        path = self.get_parameter("mounting_path").value
+        try:
+            mounting, provenance = load_mounting(path)
+        except Exception as exc:  # noqa: BLE001 - a bad file must not kill the node
+            response.success = False
+            response.message = (
+                f"{path} could not be read ({exc}). Still using the previous "
+                "geometry — nothing has changed."
+            )
+            self.get_logger().error(f"mounting reload failed: {exc}")
+            return response
+
+        if provenance.error:
+            # Deliberately NOT applied. Falling back to defaults here would
+            # silently discard a measurement somebody had just made, which is
+            # the worst outcome available.
+            response.success = False
+            response.message = (
+                f"{provenance.path} could not be used ({provenance.error}). "
+                "Still using the previous geometry."
+            )
+            self.get_logger().error(f"mounting reload rejected: {provenance.error}")
+            return response
+
+        self.mounting, self.mounting_provenance = mounting, provenance
+        if provenance.provisional:
+            response.success = True
+            response.message = (
+                "Reloaded, and still PROVISIONAL: the file says nobody has "
+                "measured the tilt or the lever arm."
+            )
+            self.get_logger().warning("mounting reloaded, still PROVISIONAL")
+        else:
+            response.success = True
+            response.message = (
+                f"Reloaded. Measured by {provenance.measured_by or 'unrecorded'}, "
+                f"{provenance.measured_utc or 'date unrecorded'}."
+            )
+            self.get_logger().info(f"mounting reloaded from {provenance.path}")
         return response
 
     def _on_stop(self, request, response):

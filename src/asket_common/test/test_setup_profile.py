@@ -381,3 +381,93 @@ def test_the_hash_notices_a_change_of_provenance_alone():
     typed = default_profile().set(MOUNTING, 35.0, ENTERED, utc_ms=NOW)
     measured = default_profile().set(MOUNTING, 35.0, MEASURED, utc_ms=NOW)
     assert typed.content_hash() != measured.content_hash()
+
+
+# -- when a saved value actually starts being used -------------------------
+#
+# The weakest part of the design, and the one the page most has to be honest
+# about. ROS nodes read their configuration at startup, so a value saved on
+# the page may not be the value the vessel is running on — and a page that
+# writes a file and says "done" while the node uses the old numbers is worse
+# than the SSH session it replaces, because it also destroys the operator's
+# reason to doubt.
+
+
+def test_most_fields_are_read_live_and_say_nothing():
+    """The common case, and it must stay silent. A page that warned about
+    every save would teach people to dismiss the warning that matters."""
+    from asket_common.setup_profile import IMMEDIATELY
+
+    profile = default_profile()
+    assert profile.pending_effects([STATION_LAT, "deployment.sea.state"]) == []
+    assert FIELD_BY_ID[STATION_LAT].takes_effect == IMMEDIATELY
+
+
+def test_the_mounting_fields_do_not_take_effect_until_the_bridge_re_reads_them():
+    """omniscan_bridge loads the geometry once at startup. Seven numbers
+    measured with a tape are seven numbers the sonar is not using yet."""
+    from asket_common.setup_profile import ON_RELOAD
+
+    effects = default_profile().pending_effects([
+        MOUNTING, "vessel.sonar.mounting.lever_x_m", "vessel.sonar.side",
+    ])
+    assert len(effects) == 1
+    assert effects[0].takes_effect == ON_RELOAD
+    assert effects[0].applied_by == "omniscan_bridge"
+    assert len(effects[0].field_ids) == 3
+
+
+def test_a_reloadable_change_offers_the_service_that_applies_it():
+    """So the page can offer to do it rather than telling somebody to open a
+    terminal."""
+    effect = default_profile().pending_effects([MOUNTING])[0]
+    assert effect.can_be_applied_from_here
+    assert effect.reload_service == "/omniscan_bridge/reload_mounting"
+
+
+def test_the_sentence_names_the_node_and_says_it_is_not_in_use_yet():
+    effect = default_profile().pending_effects([MOUNTING])[0]
+    sentence = effect.sentence()
+    assert "omniscan_bridge" in sentence
+    assert "old" in sentence
+
+
+def test_changes_are_grouped_by_the_action_they_need():
+    """A tape-measure session changes seven mounting numbers at once. Seven
+    identical "reload the sonar bridge" lines is seven chances to read past
+    the one that matters."""
+    every_mounting = [
+        spec.id for spec in FIELDS if spec.id.startswith("vessel.sonar.mounting.")
+    ]
+    effects = default_profile().pending_effects(every_mounting + [STATION_LAT])
+    assert len(effects) == 1
+    assert len(effects[0].field_ids) == len(every_mounting)
+
+
+def test_what_can_be_applied_from_here_comes_first():
+    """Burying the thing somebody can fix under the thing they cannot is how
+    a fixable problem gets treated as a fact of life."""
+    from asket_common.setup_profile import ON_RELOAD
+
+    effects = default_profile().pending_effects([spec.id for spec in FIELDS])
+    if len(effects) > 1:
+        assert effects[0].takes_effect == ON_RELOAD
+
+
+def test_an_unknown_field_id_is_ignored_rather_than_raising():
+    """Called with whatever the page just saved, which may include a field
+    from a newer version. Raising here would lose the report about the fields
+    that ARE known — and the report is the whole point."""
+    effects = default_profile().pending_effects([MOUNTING, "vessel.nonsense"])
+    assert len(effects) == 1
+    assert effects[0].field_ids == (MOUNTING,)
+
+
+def test_every_field_declares_when_it_takes_effect():
+    from asket_common.setup_profile import IMMEDIATELY, ON_RELOAD, ON_RESTART
+
+    for spec in FIELDS:
+        assert spec.takes_effect in (IMMEDIATELY, ON_RELOAD, ON_RESTART), spec.id
+        if spec.takes_effect == ON_RELOAD:
+            assert spec.reload_service, f"{spec.id} claims reloadable with no service"
+        assert spec.applied_by, spec.id

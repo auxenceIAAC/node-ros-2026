@@ -89,6 +89,15 @@ CAMERA_SIZES = {
 }
 
 
+#: What the simulated Jetson's clock sits at against GPS, milliseconds.
+#:
+#: Small and well inside the one-second threshold: the simulator models a
+#: vessel whose clock is disciplined, which is the case the healthy baseline
+#: is for. Drifting it is a fault somebody should be able to inject, and that
+#: is not built — when it is, this becomes the value it starts from.
+SIM_GPS_CLOCK_OFFSET_MS = 40
+
+
 class SimSource:
     """A :class:`~gui_backend.core.source.DataSource` backed by ``SimWorld``."""
 
@@ -546,6 +555,12 @@ class SimSource:
             "sonar_ping_rate_hz": sonar_payload.get("actual_ping_rate_hz"),
             "sonar_points_per_ping": sonar_payload.get("points_per_ping"),
             "clock_offset_ms": sonar_payload.get("clock_offset_ms"),
+            # The Jetson's own clock against GPS time — the hop before the
+            # sonar's. The simulated vessel runs on a disciplined clock, so
+            # this is small and recent; the fault that drifts it belongs with
+            # the other injectable ones and is not built yet.
+            "gps_time_offset_ms": SIM_GPS_CLOCK_OFFSET_MS,
+            "gps_time_age_s": 1.0,
             "disk_free_bytes": snap.disk_free_bytes,
             # Not measured in sim: reported as unknown rather than invented,
             # which is what makes it a SKIPPED check rather than a false PASS.
