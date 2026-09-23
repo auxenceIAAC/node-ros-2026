@@ -63,7 +63,7 @@ date, and only the Deployment tier goes stale.
 
 | Field | Why it matters | Currently |
 |---|---|---|
-| Sonar tilt, lever arm (aft/starboard/below) | Every sounding carries this offset. Wrong here means data that cannot be georeferenced afterwards. | `mounting.yaml`, `measured: false` |
+| **Sonar mounting geometry** — tilt, yaw, pitch, lever arm (aft/starboard/below), and which side the fan looks | Depends on how the head is physically bolted on, not on the mission. Every sounding carries the offset, it does not average out, and the survey is simply displaced and looks plausible. | `mounting.yaml`, `measured: false` |
 | `measured` / `measured_by` / `measured_utc` | Provenance. Not decoration — see below. | same |
 | Battery capacity (Wh), hotel load (W) | Endurance is arithmetic on these. Wrong here means a confident wrong number. | `topics.yaml` |
 | Shore antenna gain, beamwidths | Link budget. | `link_budget.py` defaults |
@@ -80,15 +80,23 @@ date, and only the Deployment tier goes stale.
 | Sea state | Decides whether the multipath nulls exist at all. | default 0.5 m |
 | Channel width | 3 dB of range per doubling, against throughput. | default 40 MHz |
 | Local origin (datum) | Everything in metres is relative to it. | derived, no override |
-| Sonar range / gain **defaults** | Equipment settings derived from a world fact. | `mission_defaults.yaml` |
+| **Sonar range and gain** | The other half of the sonar, and the half that changes: both follow the expected depth, so they change with the beach. | `mission_defaults.yaml` |
 
 ## The three places the rule broke
 
-**Sonar range is both.** It is an equipment setting derived from a world fact
-(depth). The page holds the *default*; the planner may override it per area,
-because a box spanning 8 m and 40 m of water genuinely wants two settings and
-forcing one is how a bad line gets recorded and nobody notices until
-post-processing.
+**The sonar splits across both tiers, and that is right.** Mounting geometry
+— offset and angle — depends on how the head is bolted to the hull. It is
+measured once on a given boat and kept, so it is Vessel, and it is the value
+that corrupts data if wrong. Range and gain depend on the expected depth, so
+they change with the beach and are Deployment. Two different kinds of fact
+about one instrument, and putting them in one tier would make the staleness
+rule wrong for whichever half lost.
+
+Range is *also* the place the world/equipment axis frays: it is an equipment
+setting derived from a world fact. The page holds the **default**; the planner
+may override it per area, because a box spanning 8 m and 40 m of water
+genuinely wants two settings and forcing one is how a bad line gets recorded
+and nobody notices until post-processing.
 
 **The shore station is the exception that proves the page.** It describes
 equipment, so by the world/equipment axis it is setup — but it moves every
@@ -411,6 +419,27 @@ re-enabled by a stale React state.
   beach.
 
 ## Build order
+
+**Step 1 is built** (`asket_common/setup_profile.py`,
+`gui_backend/core/setup_store.py`). One refinement came out of writing it that
+the design above did not have: *"not set"* hides two states that need
+different words and a different order of work. A sonar tilt of 35 degrees is a
+**guess** — usable, plausible, quite possibly wrong. A shore station position
+is **nothing** — there is no sensible default for where a tripod is standing,
+so the panel simply cannot draw. The first is a survey that may be silently
+displaced; the second is a feature that does not work. `has_default` marks the
+difference and the headline leads with it, so a fresh Jetson reads:
+
+> Five values have never been set, and there is no sensible default for them.
+> Seven values are still on a guess that can ruin a survey without it looking
+> wrong. Eight others are on unchecked defaults that only make the screen less
+> useful.
+
+and after capturing the station and measuring the hull, reads:
+
+> Eight values are still on a default nobody has checked.
+
+
 
 1. The provenance model and the setup file format, ROS-free and testable with
    no hardware. This is the part everything else reads.
