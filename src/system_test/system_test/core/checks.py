@@ -46,6 +46,23 @@ class CheckResult:
     units: str = ""
     #: True when the check exercised hardware rather than merely observing it.
     active: bool = False
+    #: The setup field this check is waiting on, if it is waiting on one.
+    #:
+    #: Empty for every check that reports a fault. Set only where the answer is
+    #: "nobody has told us this yet" — which is a different thing from "this is
+    #: broken" and needs a different response from the operator.
+    #:
+    #: The distinction earns its place because of a specific failure.
+    #: ``sonar.mounting`` has returned an amber warning on every run for two
+    #: weeks, naming ``mounting.yaml``, and nothing has happened — the file sits
+    #: behind an SSH session nobody in the club has, so the warning reads as
+    #: background noise rather than as a task. Naming the *field* rather than
+    #: the file is what lets the panel group these separately, and later lets it
+    #: link straight to the setup page with that field in view.
+    #:
+    #: Ids are dotted and tier-first, matching docs/setup_page.md:
+    #: ``vessel.sonar.mounting``, ``deployment.station.position``.
+    setup_field: str = ""
 
     def to_dict(self) -> dict:
         value = self.measured_value
@@ -58,6 +75,7 @@ class CheckResult:
             "measured_value": None if isinstance(value, float) and math.isnan(value) else value,
             "units": self.units,
             "active": self.active,
+            "setup_field": self.setup_field,
         }
 
 
@@ -557,6 +575,13 @@ def _clock(state: dict, t: Thresholds) -> CheckResult:
     )
 
 
+#: The setup field ``sonar.mounting`` is waiting on. Vessel tier: measured once
+#: on a given hull and kept, which is also why this check stays amber rather
+#: than becoming a FAIL — it is a thing to do properly once, not a thing that
+#: goes stale.
+MOUNTING_FIELD = "vessel.sonar.mounting"
+
+
 @check("sonar.mounting", "Sonar mounting geometry")
 def _mounting(state: dict, t: Thresholds) -> CheckResult:
     """Has anybody actually measured where the transducer is?
@@ -594,6 +619,7 @@ def _mounting(state: dict, t: Thresholds) -> CheckResult:
             "No mounting file — the sonar's position is a hard-coded guess",
             "Measure the tilt and the lever arm from the GNSS antenna to the "
             f"transducer, write them into {path}, and set measured: true.",
+            setup_field=MOUNTING_FIELD,
         )
 
     unknown = m.get("unknown_fields") or []
@@ -613,6 +639,7 @@ def _mounting(state: dict, t: Thresholds) -> CheckResult:
             "Measure the tilt and the lever arm from the GNSS antenna to the "
             "transducer, to the centimetre, then set measured: true. Until "
             "then every sounding carries the same unknown offset.",
+            setup_field=MOUNTING_FIELD,
         )
 
     who = m.get("measured_by") or "unrecorded"

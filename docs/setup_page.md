@@ -200,6 +200,119 @@ less: a form that appears to succeed while the node still uses the old values
 is strictly worse than an SSH session, because it also destroys the operator's
 reason to doubt.
 
+## Waiving a pre-flight check
+
+Mounting geometry stays WARN — it never changes on a given hull, so it is a
+thing to do once and keep, not a thing that goes stale, and escalating it
+would be treating a Vessel-tier value as if it were a Deployment one.
+
+But the pre-flight should be hard to get round. There are real cases — testing
+at the pontoon, a sensor deliberately not in use — so a waiver has to exist.
+The risk is that it becomes a checkbox somebody ticks by habit, at which point
+the whole pre-flight has been switched off without anybody deciding to.
+
+### What a waiver *means*
+
+The rule that decides everything below, and it is narrower than "are you
+sure?":
+
+> **A waiver is a declaration that a subsystem is not in use for this mission.
+> It is never a declaration that you accept a degraded version of a subsystem
+> you are using.**
+
+That has teeth. Waiving `lidar.spin` says "no lidar today", which is coherent
+and harmless — nothing records lidar into the survey product. Waiving
+`sonar.mounting` would say "I am surveying with unknown geometry", which is
+not a statement about what is in use; it is accepting corrupt output. The test
+for whether a check is waivable is therefore mechanical: **does "not in use"
+mean anything for it?**
+
+### Never waivable
+
+| Check | Why not |
+|---|---|
+| `sonar.mounting` | Every sounding carries the same unknown offset, and it looks entirely plausible until somebody overlays a second survey. There is no "the mounting is not in use". |
+| `sonar.clock` | A wrong sonar clock makes the whole mission un-georeferenceable. If the sonar is in use, its clock is in use. |
+| `gnss.fix` | Nothing on this boat works without position, and a survey recorded on a poor fix is junk that looks like data. There is no "GNSS not in use". |
+| `heading.valid` | The swath is placed by heading. Invalid heading is silently displaced data. |
+| `rc.link` | **The safety chain.** The transmitter is how a human takes the boat back. Not waivable under any circumstance, in any mode, at any range. |
+| `pico.link` | Same. Without it the vessel cannot be commanded or observed. |
+| `pico.firmware_version`, `pico.state_format` | If these fail the GUI cannot read mode or arming, so waiving them waives the ability to notice anything else. |
+
+The first four are Auxence's rule applied literally: **anything that can
+corrupt recorded data**. The last three are a second principle that falls out
+of the same reasoning — *you may not waive the thing you would use to detect
+that the waiver was a mistake*.
+
+`pico.estop_feedback` is in neither group. It is the permanent amber that
+exists because `ESTOP_FEEDBACK_ENABLED` is 0 and nothing confirms the ESC rail
+collapsed. Waiving it would silence the only honest statement anybody makes
+about the e-stop path, and since it is WARN it blocks nothing anyway. It is
+**acknowledged, never waived**, and it clears by a firmware change.
+
+### Waivable, as a declaration of non-use
+
+| Check | The declaration | Consequence |
+|---|---|---|
+| `lidar.spin` | no lidar this mission | obstacle overlay off, and says why |
+| `sonar.link` | not surveying — driving only | **recording refuses to start** |
+| `disk.space`, `disk.speed` | not recording | recording refuses to start |
+| `link.quality` | working alongside on a poor link | none; it is already a quality warning |
+| `battery.charge` | short bench run | none, but endurance is shown as unknown rather than a number |
+| `imu.rest`, `heading.divergence` | vessel is moving during pre-flight | heading quality shown as degraded |
+| `ros.nodes` | a named node is deliberately not launched | that node's panels say "not running" |
+
+The consequences matter as much as the permissions. Waiving `sonar.link` and
+then recording anyway would produce a mission directory that looks like a
+survey and contains none, so **the waiver disables the thing it excused**.
+A waiver that costs nothing is a waiver that gets ticked.
+
+### Making it visible afterwards
+
+Five mechanisms, and the fifth is the one that actually prevents a habit:
+
+1. **A typed reason, not a dropdown.** Free text, and a dropdown of pre-canned
+   excuses is exactly the thing that becomes muscle memory. Somebody writing
+   "bench test, sonar disconnected" has thought about it; somebody selecting
+   *Other* has not.
+2. **Scoped to one mission, and expiring.** Not a setting. The next mission
+   starts with every check live again.
+3. **Written into the mission directory**, beside the trajectory — so it is in
+   the *data*, not only in a UI nobody will be looking at in three months. A
+   survey can be audited afterwards without anybody remembering.
+4. **Never a plain GO.** The verdict reads *"GO — 2 checks waived"*, in
+   different words and a different colour, and the cockpit carries a standing
+   badge for the whole mission rather than a toast that disappears.
+5. **A count, shown on the setup page.** *"This vessel has been launched with
+   waived checks 4 times."* A single waiver is a judgement; four is a pattern,
+   and the only way a pattern becomes visible is if something counts it. This
+   is the mechanism I would fight hardest to keep, because it is the one that
+   addresses the actual failure mode — not any individual waiver, but the
+   habit.
+
+And: **a waived check that starts passing clears its own waiver.** Otherwise a
+stale waiver hides a real regression later, which turns a safety mechanism
+into a blindfold.
+
+### Where I would argue with myself
+
+**`battery.charge` may belong in the unwaivable group.** A flat battery does
+not corrupt data, but it does put a drifting boat somewhere a human has to go
+and get it, and "short bench run" is exactly what somebody says before a
+two-hour session. I have left it waivable because pontoon testing is a real
+need, but I would not object to it moving.
+
+**`ros.nodes` is not one check.** It reports on several nodes at once, so a
+waiver is all-or-nothing when what somebody wants is "not `boat_bt` today".
+Either it splits per node, or the waiver takes a node name. I would split it,
+and I have not designed that here.
+
+**The count could be gamed by a fresh Jetson**, which starts at zero. It lives
+in the setup file, so restoring a saved deployment restores the count — which
+is right — but somebody starting clean loses the history. I think that is
+acceptable; the alternative is storing it somewhere a person cannot reach,
+which is a different kind of dishonest.
+
 ## Storage
 
 **One file per deployment on the Jetson**, overlaying the per-package defaults

@@ -38,6 +38,10 @@ export function DiagnosticsPanel({ state, connection }) {
     .sort((a, b) => (a.issued_utc_ms || 0) - (b.issued_utc_ms || 0))
     .pop();
   const pending = lastRun?.status === 'pending';
+  // Checks waiting on a value somebody has to enter, rather than on something
+  // being repaired. A check only carries `setup_field` when the honest answer
+  // is "nobody has told us this yet".
+  const awaiting = items.filter((item) => item.setup_field && item.status !== 'PASS');
 
   // A report that predates the press has not answered it. Saying "GO" from a
   // report taken before the button was touched would be the panel answering a
@@ -119,6 +123,44 @@ export function DiagnosticsPanel({ state, connection }) {
         available from this panel.
       </p>
 
+      {/*
+        "Nobody has told us this yet" is not the same problem as "this is
+        broken", and until now the panel rendered them identically: both amber,
+        both with a remedy, both easy to read past.
+
+        That is not a theory. `sonar.mounting` has returned the same amber
+        warning on every run for two weeks, naming a YAML file that lives
+        behind an SSH session nobody in the club has, and nothing has happened.
+        Separating the two is the smallest change that could plausibly get it
+        cleared — a missing value is a job somebody can finish, and a list of
+        them is short enough to finish today.
+
+        The names are still fields rather than links because the setup page
+        does not exist yet. When it does, each becomes a link that opens it
+        with that field in view; nothing else here changes.
+      */}
+      {awaiting.length > 0 && (
+        <div className="awaiting-setup">
+          <p className="awaiting-setup-headline">
+            {awaiting.length === 1
+              ? 'One value has never been entered'
+              : `${awaiting.length} values have never been entered`}
+          </p>
+          <p className="hint" style={{ marginTop: 0 }}>
+            Not faults — things nobody has told the vessel yet. They stay amber
+            until somebody does.
+          </p>
+          <ul className="awaiting-setup-list">
+            {awaiting.map((item) => (
+              <li key={item.id}>
+                <span className="setup-field">{item.setup_field}</span>
+                <span className="hint"> — {item.name}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {items.length > 0 && (
         <div style={{ marginTop: 10 }}>
           {items.map((item) => (
@@ -134,6 +176,11 @@ export function DiagnosticsPanel({ state, connection }) {
               {item.remedy && item.status !== 'PASS' && (
                 <div className={item.status === 'FAIL' ? 'errline' : 'warnline'}>
                   {item.remedy}
+                </div>
+              )}
+              {item.setup_field && item.status !== 'PASS' && (
+                <div className="hint">
+                  Waiting on <span className="setup-field">{item.setup_field}</span>
                 </div>
               )}
               {degrading.includes(item.id) && (

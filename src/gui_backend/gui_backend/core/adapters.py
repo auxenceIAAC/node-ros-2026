@@ -426,6 +426,12 @@ def preflight_from_ros(msg) -> dict:
                 "measured_value": None if math.isnan(value) else value,
                 "units": item.units,
                 "active": bool(item.active),
+                # getattr rather than a plain read: a Jetson running a
+                # system_test built before this field existed would otherwise
+                # take the whole Pre-flight panel down with an AttributeError,
+                # and a panel that goes blank because a message gained a field
+                # is precisely the failure this GUI keeps being bitten by.
+                "setup_field": getattr(item, "setup_field", "") or "",
             }
         )
     return {

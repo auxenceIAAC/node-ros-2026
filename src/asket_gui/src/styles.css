@@ -627,3 +627,41 @@ details.advanced { border-top: 1px solid var(--line); margin-top: 6px; }
 .camera-hide {
   margin-top: 6px;
 }
+
+
+/* -- checks waiting on a value ------------------------------------------ */
+/*
+   Deliberately not amber. These are not faults and colouring them like faults
+   is how they came to be ignored: two weeks of the same warning taught the
+   club that amber on this panel means nothing.
+*/
+
+.awaiting-setup {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid #5b8db2;
+  background: rgba(90, 140, 180, 0.09);
+  border-radius: 0 4px 4px 0;
+}
+
+.awaiting-setup-headline {
+  margin: 0 0 2px;
+  font-weight: 600;
+}
+
+.awaiting-setup-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.awaiting-setup-list li {
+  margin-bottom: 2px;
+}
+
+.setup-field {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+}

@@ -316,6 +316,7 @@ class SystemTestNode(Node):
             )
             item.units = result.units
             item.active = result.active
+            item.setup_field = result.setup_field
             msg.items.append(item)
         return msg
 
