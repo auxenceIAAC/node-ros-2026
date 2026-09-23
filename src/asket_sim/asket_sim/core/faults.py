@@ -39,6 +39,20 @@ FAULTS = {
     "rc_link_loss": "RC link to the operator's transmitter is lost.",
     "battery_fault": "Propulsion draws far more than it should.",
     "lidar_stall": "Lidar stops rotating.",
+    "camera_dead": (
+        "The camera driver cannot open the device and publishes nothing, ever. "
+        "The real one logs 'Cannot open /dev/video0 - running in degraded "
+        "mode' and then goes quiet, which is a likely failure and a silent "
+        "one. Distinct from `camera_frozen`: there was never a picture, so "
+        "there is no stale frame to be misled by."
+    ),
+    "camera_frozen": (
+        "Frames stop arriving while everything else keeps running. THE fault "
+        "for the freeze contract: the last picture is still perfectly good "
+        "and is no longer true, and a frozen feed is the most convincing lie "
+        "this interface could tell. Watch the clock burned into the picture - "
+        "it stops while the age beside it climbs."
+    ),
 }
 
 
