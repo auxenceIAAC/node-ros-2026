@@ -7,12 +7,16 @@
   ],
   "profiles": {
     "full": {
-      "budget_bytes_per_s": 200000.0,
-      "description": "Fast WiFi \u2014 everything",
+      "budget_bytes_per_s": 2000000.0,
+      "description": "Directional link \u2014 everything, including video",
       "policies": {
         "alarms": {
           "detail": "full",
           "max_rate_hz": 2.0
+        },
+        "camera": {
+          "detail": "full",
+          "max_rate_hz": 15.0
         },
         "coverage": {
           "detail": "full",
@@ -153,6 +157,14 @@
       "max_rate_hz": 2.0,
       "on_change_only": false,
       "typical_bytes": 180
+    },
+    "camera": {
+      "critical": false,
+      "default_rate_hz": 5.0,
+      "description": "Forward camera, with its age on every frame",
+      "max_rate_hz": 15.0,
+      "on_change_only": false,
+      "typical_bytes": 45000
     },
     "coverage": {
       "critical": false,

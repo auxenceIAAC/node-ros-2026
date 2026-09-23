@@ -18,8 +18,14 @@ import {
 } from './world.js';
 import { PROFILES, PROFILE_ORDER, STREAMS, estimateBytesPerS, resolve } from './policy.js';
 import * as payloads from './payloads.js';
+import * as VF from './videoFrame.js';
 
 const TICK_MS = 100;
+
+// Mirrors CAMERA_SIZES in gui_backend/core/sim_source.py. 640x480 is the
+// sensor's native resolution — both the real calibration and the Gazebo
+// model say so — and there is no higher rung to offer.
+const CAMERA_SIZES = { full: [640, 480], reduced: [320, 240], minimal: [160, 120] };
 const PING_INTERVAL_MS = 2000;
 const MODE_VALUES = { ESTOP: MODE_ESTOP, MANUAL: MODE_MANUAL, AUTONOMOUS: MODE_AUTONOMOUS };
 
@@ -508,6 +514,10 @@ export class MockTransport {
     const nowMs = this.world.utcMs;
     for (const [name, sub] of this.subscriptions) {
       if (!sub.resolution.granted) continue;
+      if (name === 'camera') {
+        this.#pushCamera(sub, nowMs);
+        continue;
+      }
       const spec = STREAMS[name];
       let payload;
 
@@ -534,6 +544,69 @@ export class MockTransport {
         payload,
       });
     }
+  }
+
+  /**
+   * Pixels, or a reason there are none — and unlike every other stream, one
+   * or the other on EVERY due tick.
+   *
+   * Saying nothing is the right answer elsewhere; a stream with nothing to
+   * report should let the panel age it out. It is the wrong answer here,
+   * because the panel has to tell a vessel that has stopped sending from a
+   * link that has stopped carrying, and from the shore those are identical.
+   * The status frame is the difference, and it is eighty bytes.
+   */
+  #pushCamera(sub, nowMs) {
+    if (sub.resolution.rate_hz <= 0 || nowMs < sub.nextDueMs) return;
+    sub.nextDueMs = nowMs + 1000 / sub.resolution.rate_hz;
+
+    const camera = this.world.camera;
+    const state = this.world.cameraState();
+    const size = CAMERA_SIZES[sub.resolution.detail] ?? CAMERA_SIZES.full;
+    const frame = state === 'live' ? camera.frame(size[0], size[1]) : null;
+
+    if (frame) {
+      this.#emitBinary(VF.encode(
+        VF.frameHeader({
+          seq: frame.seq,
+          sourceUtcMs: frame.utcMs,
+          serverUtcMs: nowMs,
+          width: frame.width,
+          height: frame.height,
+          format: frame.format,
+          sizeBytes: frame.bytes.length,
+          detail: sub.resolution.detail,
+          rateHz: sub.resolution.rate_hz,
+        }),
+        frame.bytes,
+      ));
+      return;
+    }
+
+    let reason = VF.REASON_NOT_STARTED;
+    if (state === 'dead') reason = VF.REASON_DEAD;
+    else if (state === 'frozen') reason = VF.REASON_FROZEN;
+    else if (camera.framesProduced > 0) {
+      // Live, the shutter is running, and the encoder has not caught up with
+      // this exposure yet. That is not a fault and must not be reported as
+      // one: a single missed tick is what the panel's "late" rung is for, and
+      // claiming "no frames yet" while fourteen have been taken would be a
+      // contradiction on the face of it.
+      return;
+    }
+
+    this.#emitBinary(VF.encode(VF.statusHeader({
+      reason,
+      serverUtcMs: nowMs,
+      rateHz: sub.resolution.rate_hz,
+      lastFrameUtcMs: camera.lastFrameUtcMs,
+      framesProduced: camera.framesProduced,
+    })));
+  }
+
+  #emitBinary(buffer) {
+    if (!this.onmessage || this.readyState !== OPEN) return;
+    this.onmessage({ data: buffer });
   }
 
   #payload(name, sub) {

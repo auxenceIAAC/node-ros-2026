@@ -42,6 +42,7 @@ from .commands import (
     propulsion_cut_confirmed,
     recording_confirmed,
 )
+from . import video_frame
 from .link_profile import ProfileSelector
 from .shaper import LinkShaper
 from .source import DataSource
@@ -108,6 +109,21 @@ class ClientSession:
         self.shaper = shaper or LinkShaper(enabled=False)
         self.subscriptions: dict[str, Subscription] = {}
         self.outbox: asyncio.Queue[dict] = asyncio.Queue(maxsize=self.QUEUE_LIMIT)
+        #: Video has its own queue, one frame deep, and its own writer.
+        #:
+        #: Not tidiness. The telemetry outbox holds 64 messages and evicts the
+        #: oldest when it fills; a 45 kB camera frame occupies one slot exactly
+        #: as a 200-byte `pico` frame does, but takes hundreds of times longer
+        #: to write. Sharing the queue means that when the link degrades, the
+        #: eviction falls on *telemetry* — the boat's position and mode go off
+        #: the screen so that a picture can arrive, which is precisely
+        #: backwards.
+        #:
+        #: Depth one, newest wins, so at most a single frame is ever in flight
+        #: and a backlog cannot form. A slow link then costs dropped frames,
+        #: which is what a slow link should cost.
+        self.video_outbox: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
+        self.video_dropped = 0
         self.dropped = 0
         self.connected_at_s = time.monotonic()
         self.rtt_ms: float | None = None
@@ -131,6 +147,25 @@ class ClientSession:
             except (asyncio.QueueEmpty, asyncio.QueueFull):
                 pass
             self.dropped += 1
+
+    def send_video(self, frame: bytes) -> None:
+        """Enqueue a frame, discarding any older one still waiting.
+
+        The opposite policy to :meth:`send`. Telemetry keeps a short history
+        because a position from two seconds ago is still worth having; a
+        picture from two seconds ago is worth less than the one behind it, and
+        showing it would be the lie this panel exists to avoid.
+        """
+        if self.video_outbox.full():
+            try:
+                self.video_outbox.get_nowait()
+                self.video_dropped += 1
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self.video_outbox.put_nowait(frame)
+        except asyncio.QueueFull:
+            self.video_dropped += 1
 
     def resubscribe(self, profile: str, now_s: float = 0.0) -> list[Resolution]:
         """Re-resolve every subscription against a new profile.
@@ -475,6 +510,10 @@ class Hub:
     ) -> None:
         spec = STREAMS[name]
 
+        if name == "camera":
+            self._push_camera(session, sub, now_s, now_utc)
+            return
+
         if spec.on_change_only:
             sample = self.source.snapshot(name, sub.resolution.detail, sub.cursor)
             if sample is None:
@@ -515,6 +554,57 @@ class Hub:
                 "payload": sample.payload,
             }
         )
+
+    def _push_camera(
+        self, session: ClientSession, sub: Subscription, now_s: float, now_utc: int
+    ) -> None:
+        """Pixels, or a reason there are none.
+
+        Unlike every other stream, this one sends something on *every* due
+        tick whether or not there is a picture. ``_report_unavailable`` is the
+        right answer elsewhere — a stream that has nothing to say should say
+        nothing and let the panel age out. It is the wrong answer here,
+        because the panel has to tell a vessel that has stopped sending from a
+        link that has stopped carrying, and from the shore those look
+        identical. The status frame is eighty bytes and it is the whole
+        difference.
+        """
+        if sub.resolution.rate_hz <= 0.0 or now_s < sub.next_due_s:
+            return
+        sub.next_due_s = now_s + 1.0 / sub.resolution.rate_hz
+
+        sample = self.source.snapshot("camera", sub.resolution.detail, sub.cursor)
+        if sample is None:
+            # The source does not produce this stream at all — no camera
+            # configured, or a RosSource with nothing subscribed. That is a
+            # different silence again, and the ordinary machinery words it.
+            self._report_unavailable(session, "camera", sub, now_s, now_utc)
+            return
+
+        payload = sample.payload
+        image = payload.get("image") or b""
+        if image:
+            header = video_frame.frame_header(
+                seq=payload["seq"],
+                source_utc_ms=sample.source_utc_ms,
+                server_utc_ms=now_utc,
+                width=payload["width"],
+                height=payload["height"],
+                image_format=payload["format"],
+                size_bytes=len(image),
+                detail=sub.resolution.detail,
+                rate_hz=sub.resolution.rate_hz,
+            )
+            sub.sent += 1
+        else:
+            header = video_frame.status_header(
+                reason=payload.get("reason", video_frame.REASON_NOT_STARTED),
+                server_utc_ms=now_utc,
+                rate_hz=sub.resolution.rate_hz,
+                last_frame_utc_ms=payload.get("last_frame_utc_ms"),
+                frames_produced=payload.get("frames_produced", 0),
+            )
+        session.send_video(video_frame.encode(header, image))
 
     def _report_tick_failure(self) -> None:
         """Log the traceback and tell every client, without flooding either.

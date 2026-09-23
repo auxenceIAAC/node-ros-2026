@@ -262,6 +262,7 @@ def create_app(
         await ws.send_json(hub.add_client(session))
 
         writer = asyncio.create_task(_writer(ws, session))
+        video = asyncio.create_task(_video_writer(ws, session))
         pinger = asyncio.create_task(_pinger(ws, session, hub, ping_interval_s))
         try:
             while True:
@@ -275,7 +276,7 @@ def create_app(
             pass
         finally:
             hub.remove_client(session.id)
-            for task in (writer, pinger):
+            for task in (writer, video, pinger):
                 task.cancel()
 
     # -- the frontend -----------------------------------------------------
@@ -348,6 +349,35 @@ async def _writer(ws: WebSocket, session: ClientSession) -> None:
                 continue
 
             await ws.send_json(message)
+    except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+        pass
+
+
+async def _video_writer(ws: WebSocket, session: ClientSession) -> None:
+    """Drain the client's video queue onto the socket, as binary.
+
+    A second writer rather than a branch inside the first one, because the two
+    have opposite jobs. The telemetry writer must not skip anything: a position
+    or a mode change dropped is information lost. This one must not *wait* for
+    anything: the queue is one frame deep and newest wins, so a link that
+    cannot keep up costs dropped frames rather than a growing backlog of
+    pictures that were true a moment ago.
+
+    Awaiting the send matters more than it looks. It is what bounds the number
+    of frames in flight to exactly one — the next is not taken off the queue
+    until this one has been handed to the transport — so a collapsing link
+    cannot stack 45 kB frames in front of the telemetry sharing the socket.
+    """
+    try:
+        while True:
+            frame = await session.video_outbox.get()
+            if session.shaper.enabled:
+                if session.shaper.should_drop():
+                    continue
+                delay = session.shaper.delay_for(len(frame))
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            await ws.send_bytes(frame)
     except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
         pass
 

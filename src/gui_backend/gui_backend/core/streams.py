@@ -126,6 +126,23 @@ STREAMS: dict[str, StreamSpec] = {
             "plan", "Survey lines, waypoints, geofence",
             default_rate_hz=0.0, max_rate_hz=1.0, on_change_only=True, typical_bytes=2000,
         ),
+        StreamSpec(
+            # The one stream that changes the economics of the link, and the
+            # only one sent as binary rather than JSON.
+            #
+            # 45 kB is a 640x480 JPEG of a marine scene at quality 80 — a
+            # real-world figure, deliberately NOT measured from the simulator,
+            # whose flat synthetic frames compress to about seven. Tuning a
+            # budget against the mock would understate this stream sixfold.
+            #
+            # 5 Hz by default rather than 1: with the directional link this is
+            # about 1.8 Mbit/s against a bearer measured in tens, so the
+            # constraint is no longer the link. It is the Jetson — encode cost,
+            # plus vision_node already running YOLO on the CPU — and nobody has
+            # measured that, which is why the ceiling is 15 and not 30.
+            "camera", "Forward camera, with its age on every frame",
+            default_rate_hz=5.0, max_rate_hz=15.0, typical_bytes=45_000,
+        ),
     ]
 }
 
@@ -153,15 +170,22 @@ class Profile:
 
 
 def _full_profile() -> Profile:
-    """Fast WiFi: everything, at each stream's own ceiling."""
+    """The directional link: everything, at each stream's own ceiling."""
     return Profile(
         name=PROFILE_FULL,
-        description="Fast WiFi — everything",
+        description="Directional link — everything, including video",
         policies={
             name: StreamPolicy(spec.max_rate_hz, DETAIL_FULL)
             for name, spec in STREAMS.items()
         },
-        budget_bytes_per_s=200_000.0,
+        # Two megabytes a second. Raised from 200 kB, which was set when "fast
+        # WiFi" meant an access point on the beach: a sector antenna on a
+        # tripod against a boat-mounted omni carries tens of megabits at
+        # survey range, and video alone would have eaten the whole of the old
+        # figure. PROVISIONAL — it is a policy ceiling rather than a
+        # measurement, and the link budget it is drawn from has not been
+        # calibrated on the water.
+        budget_bytes_per_s=2_000_000.0,
     )
 
 
@@ -188,6 +212,15 @@ def _reduced_profile() -> Profile:
             "sonar": StreamPolicy(0.5, DETAIL_REDUCED),
             "diagnostics": StreamPolicy(0.1, DETAIL_REDUCED),
             "plan": StreamPolicy(0.0, DETAIL_REDUCED),
+            # `camera` is deliberately absent, so resolve() refuses it with
+            # this profile's own sentence rather than granting a trickle.
+            #
+            # A single 320x240 frame is about 10 kB and this budget is 12 kB/s,
+            # so even 0.2 fps would be a sixth of everything, permanently, for
+            # a picture five seconds old at every glance — the freeze problem
+            # on a timer. A one-shot "fetch one frame now" is the right shape
+            # here and is not built: it is a middle rung, and whether this
+            # profile is ever reached depends on Q6a, which is open.
         },
         budget_bytes_per_s=12_000.0,
     )

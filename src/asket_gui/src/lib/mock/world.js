@@ -20,6 +20,7 @@
 // What it deliberately does not model is anything the GUI cannot see. There is
 // no hydrodynamics here, and there does not need to be.
 
+import { MockCamera } from './camera.js';
 import * as LB from './linkBudget.js';
 
 const METRES_PER_DEG_LAT = (Math.PI * 6371008.8) / 180;
@@ -187,6 +188,7 @@ export class MockWorld {
     this.magWalk = 0;
     this.fade = 0;
     this.alignmentErrorDeg = 0;
+    this.camera = new MockCamera();
 
     this.mode = MODE_MANUAL;
     this.armed = false;
@@ -276,6 +278,7 @@ export class MockWorld {
     this.#stepPico(dt);
     this.#stepBattery(dt);
     this.#stepLink(dt);
+    this.#stepCamera();
     this.#stepSonar(dt);
     this.#accumulateLayers();
     this.#stepMission(dt);
@@ -372,6 +375,31 @@ export class MockWorld {
     this.remainingWh = Math.max(0, this.remainingWh - wh);
     this.consumedWh += wh;
     this.avgPowerW += (power - this.avgPowerW) * Math.min(1, dt / 60);
+  }
+
+  /**
+   * `'live'`, `'dead'` or `'frozen'`. Mirrors SimWorld.camera_state.
+   *
+   * Three states rather than a boolean because they send an operator to three
+   * different places: a camera that never produced a picture is a cable or a
+   * device; one that produced pictures and stopped is the Jetson or the
+   * driver; and neither is the link having gone.
+   */
+  cameraState() {
+    if (this.hasFault('camera_dead')) return 'dead';
+    if (this.hasFault('camera_frozen')) return 'frozen';
+    return 'live';
+  }
+
+  #stepCamera() {
+    this.camera.step(this.utcMs, {
+      east: this.east,
+      north: this.north,
+      headingDeg: this.trueHeading,
+      pitchDeg: this.pitchDeg ?? 0,
+      obstacles: this.cfg.obstacles ?? [],
+      running: this.cameraState() === 'live',
+    });
   }
 
   #stepLink(dt) {

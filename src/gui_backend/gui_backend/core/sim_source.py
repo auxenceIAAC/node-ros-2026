@@ -43,7 +43,7 @@ from omniscan_bridge.core.status import SonarHealthTracker
 from system_test.core.checks import run_checks
 from system_test.core.history import PreflightHistory
 
-from . import payloads
+from . import payloads, video_frame
 from .commands import (
     CMD_CLEAR_FAULT,
     CMD_CUT_PROPULSION,
@@ -57,7 +57,7 @@ from .commands import (
     CMD_STOP_MISSION,
 )
 from .source import CommandOutcome, Sample
-from .streams import DETAIL_FULL
+from .streams import DETAIL_FULL, DETAIL_MINIMAL, DETAIL_REDUCED
 
 
 def _default_mounting_path():
@@ -75,6 +75,18 @@ def _default_mounting_path():
         if candidate.is_file():
             return candidate
     return None
+
+
+#: What each detail level asks the camera for. The native sensor is 640x480 —
+#: both the real calibration and the Gazebo model say so — and there is no
+#: higher rung to offer, which is worth knowing before somebody designs a 1080p
+#: option. The lower rungs exist for the quality control on the panel rather
+#: than for a profile: `camera` is carried on the full profile only.
+CAMERA_SIZES = {
+    DETAIL_FULL: (640, 480),
+    DETAIL_REDUCED: (320, 240),
+    DETAIL_MINIMAL: (160, 120),
+}
 
 
 class SimSource:
@@ -393,6 +405,44 @@ class SimSource:
                 stream, snap.lidar.utc_ms,
                 payloads.lidar_payload(snap.lidar, detail, decimation),
             )
+        if stream == "camera":
+            # Rendered here and nowhere earlier: the world captured a pose when
+            # the shutter fell and draws the picture only because this line
+            # asked for it. An unsubscribed camera costs a few microseconds a
+            # tick, which is the architecture's first rule applied to the one
+            # stream where it is measured in milliseconds.
+            width, height = CAMERA_SIZES[detail]
+            frame = self.world.camera.frame(width, height)
+            if frame is None:
+                return Sample(stream, snap.utc_ms, {
+                    "image": b"",
+                    "reason": (
+                        video_frame.REASON_DEAD if snap.camera_state == "dead"
+                        else video_frame.REASON_NOT_STARTED
+                    ),
+                    "frames_produced": snap.camera_frames,
+                    "last_frame_utc_ms": None,
+                })
+            if snap.camera_state != "live":
+                # A perfectly good picture that is no longer true. The frame is
+                # NOT sent again: re-sending it would make a frozen camera
+                # indistinguishable from a working one on any panel that does
+                # not check the sequence number, and this is exactly the case
+                # that must not depend on the panel being careful.
+                return Sample(stream, frame.utc_ms, {
+                    "image": b"",
+                    "reason": video_frame.REASON_FROZEN,
+                    "frames_produced": snap.camera_frames,
+                    "last_frame_utc_ms": frame.utc_ms,
+                })
+            return Sample(stream, frame.utc_ms, {
+                "image": frame.data,
+                "seq": frame.seq,
+                "width": frame.width,
+                "height": frame.height,
+                "format": frame.image_format,
+            })
+
         if stream == "link":
             # The bearer-side facts only. Profile, client count and the rate
             # actually being pushed are the hub's to know, and it merges them

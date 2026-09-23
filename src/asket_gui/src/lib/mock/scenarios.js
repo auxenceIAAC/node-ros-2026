@@ -96,6 +96,44 @@ export const SCENARIOS = [
     ],
   },
   {
+    group: 'Camera',
+    items: [
+      {
+        id: 'camera_frozen',
+        label: 'Camera frozen',
+        kind: 'fault',
+        detail:
+          'Frames stop arriving while everything else keeps running. The hardest '
+          + 'case this interface has: the last picture is perfectly good, perfectly '
+          + 'sharp, and no longer true. A frozen video feed is the most convincing '
+          + 'lie this GUI could tell.\n\n'
+          + 'Watch the clock burned into the picture. It must stop while the age '
+          + 'beside it climbs — that is how you tell a panel that has correctly '
+          + 'noticed from a panel that has itself stopped redrawing. Both look like '
+          + 'a still image; only the clock inside the picture separates them.\n\n'
+          + 'The ladder: the live dot goes out, then the picture desaturates with '
+          + 'its age across it, then at three seconds it is hidden entirely — with '
+          + 'a button to look at it deliberately, labelled. That is the only place '
+          + 'in this GUI that destroys information on purpose, and it is because '
+          + 'people believe photographs.',
+      },
+      {
+        id: 'camera_dead',
+        label: 'Camera not found',
+        kind: 'fault',
+        detail:
+          'The driver cannot open the device and publishes nothing, ever. The real '
+          + 'one logs "Cannot open /dev/video0 — running in degraded mode" and then '
+          + 'goes quiet.\n\n'
+          + 'The easier of the two failures, because there is no stale picture to be '
+          + 'fooled by — but it must not read the same as a lost link. The panel '
+          + 'keeps receiving status frames from the vessel, so it can say this is a '
+          + 'boat-side fault rather than a shore-side one, and send somebody to the '
+          + 'cable instead of the antenna.',
+      },
+    ],
+  },
+  {
     group: 'Sensors',
     items: [
       {

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlarmPanel } from './panels/AlarmPanel.jsx';
 import { DiagnosticsPanel } from './panels/DiagnosticsPanel.jsx';
 import { HeadingPanel } from './panels/HeadingPanel.jsx';
+import { CameraPanel } from './panels/CameraPanel.jsx';
 import { LidarPanel } from './panels/LidarPanel.jsx';
 import { LinkStatus } from './panels/LinkStatus.jsx';
 import { MissionMap } from './panels/MissionMap.jsx';
@@ -46,6 +47,13 @@ const SUBSCRIPTIONS = [
   { name: 'mission', rate_hz: 1 },
   { name: 'diagnostics', rate_hz: 0.2 },
   { name: 'plan' },
+  // On by default, which it would not have been on the old link assumption.
+  // The reason for opt-in was bandwidth — 45 kB a frame against a 200 kB/s
+  // budget — and the directional link retired that reason: five frames a
+  // second is about 1.8 Mbit/s against a bearer measured in tens. It is
+  // carried on the full profile only, so a narrow link drops it by itself and
+  // says so.
+  { name: 'camera', rate_hz: 5 },
 ];
 
 export function App({ connection }) {
@@ -192,6 +200,13 @@ export function App({ connection }) {
         </div>
         <div className="sidebar-col">
           <PowerPanel state={state} />
+          {/* Above the sonar and lidar on purpose: this is the panel somebody
+              turns to when the lidar says there is something there and they
+              need to know what it is. */}
+          <CameraPanel
+            state={state}
+            subscribed={Boolean(state.subscriptions.camera?.granted)}
+          />
           <SonarPanel state={state} connection={connection} />
           <LidarPanel
             state={state}
