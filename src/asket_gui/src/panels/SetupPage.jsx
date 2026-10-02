@@ -126,6 +126,12 @@ export function SetupPage({ state, connection, onClose }) {
     <div className="setup-page">
       <SetupHeader onClose={onClose} />
 
+      {/* The scroller, so the save bar below is a sibling rather than a
+          sticky child of it. A sticky bar whose height changes with the
+          number of unsaved edits cannot be cleared by a fixed padding, and
+          what it covers at full scroll is the last field on the page. */}
+      <div className="setup-scroll">
+
       {/* Generated in Python. See the comment at the top of this file. */}
       <p className="setup-headline">{doc.headline}</p>
 
@@ -185,6 +191,8 @@ export function SetupPage({ state, connection, onClose }) {
           </div>
         </section>
       ))}
+
+      </div>
 
       <SetupSaveBar
         dirty={dirty}
