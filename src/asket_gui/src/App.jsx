@@ -10,6 +10,7 @@ import { MissionMap } from './panels/MissionMap.jsx';
 import { MissionPanel } from './panels/MissionPanel.jsx';
 import { ModeCommands } from './panels/ModeCommands.jsx';
 import { PowerPanel } from './panels/PowerPanel.jsx';
+import { SetupPage } from './panels/SetupPage.jsx';
 import { SonarPanel } from './panels/SonarPanel.jsx';
 import { VesselState } from './panels/VesselState.jsx';
 import { Chip } from './components/Panel.jsx';
@@ -56,8 +57,24 @@ export const SUBSCRIPTIONS = [
   { name: 'camera', rate_hz: 5 },
 ];
 
+/**
+ * Which screen is up, read from the URL hash.
+ *
+ * The hash rather than component state, for one reason: the pre-flight panel
+ * names the *field* a check is waiting on, and that name has to be clickable.
+ * `#setup/vessel.sonar.mounting.tilt_deg` opens the page with that field in
+ * view, which is the other half of the change that stopped the pre-flight
+ * naming a YAML path nobody could open. It also means the back button works
+ * and a link can be sent to somebody.
+ */
+function viewFromHash() {
+  const hash = typeof window === 'undefined' ? '' : window.location.hash;
+  return /^#setup(\/|$)/.test(hash || '') ? 'setup' : 'cockpit';
+}
+
 export function App({ connection }) {
   const state = useStore(connection);
+  const [view, setView] = useState(viewFromHash);
   const [follow, setFollow] = useState(true);
   // One toggle drives both the lidar panel and the map overlay, so the two can
   // never disagree about which point set is being looked at.
@@ -72,6 +89,12 @@ export function App({ connection }) {
   useEffect(() => {
     connection.subscribe(SUBSCRIPTIONS);
   }, [connection]);
+
+  useEffect(() => {
+    const onHash = () => setView(viewFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   const pico = streamPayload(state, 'pico');
   const sinceMessageMs = state.lastMessageAt ? Date.now() - state.lastMessageAt : null;
@@ -113,6 +136,21 @@ export function App({ connection }) {
     .filter(Boolean)
     .join(' ');
 
+  if (view === 'setup') {
+    // The cockpit is unmounted, but the socket and the subscriptions are not:
+    // this component still holds them, so the gate on the setup page reads
+    // live vessel state rather than a snapshot from when it was opened. A
+    // page that decided the boat was disarmed on the way in is exactly the
+    // stale-page accident the condition exists for.
+    return (
+      <SetupPage
+        state={state}
+        connection={connection}
+        onClose={() => { window.location.hash = ''; }}
+      />
+    );
+  }
+
   return (
     <div className={layoutClass}>
       <header className="topbar">
@@ -145,6 +183,14 @@ export function App({ connection }) {
         <StatusStrip state={state} />
 
         <div className="spacer" />
+        <button
+          type="button"
+          className="link topbar-link"
+          onClick={() => { window.location.hash = '#setup'; }}
+          title="What this vessel has been told about itself and about today's site"
+        >
+          Setup
+        </button>
         {state.hello?.source?.mode === 'sim' && (
           <Chip level="mock-banner" title="Every value on this screen is simulated.">
             Simulation

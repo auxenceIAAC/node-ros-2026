@@ -14,8 +14,11 @@ import {
   MODE_AUTONOMOUS,
   MODE_ESTOP,
   MODE_MANUAL,
+  MODE_NAMES,
   MockWorld,
 } from './world.js';
+import { gateDecision } from '../setup.js';
+import { FIELDS } from './setupProfile.js';
 import { PROFILES, PROFILE_ORDER, STREAMS, estimateBytesPerS, resolve } from './policy.js';
 import * as payloads from './payloads.js';
 import * as VF from './videoFrame.js';
@@ -315,7 +318,91 @@ export class MockTransport {
       return;
     }
 
+    if (name === 'save_setup') {
+      this.#saveSetup(args, result);
+      return;
+    }
+
     result('failed', `command '${name}' is not available in mock mode`);
+  }
+
+  /**
+   * The setup save, in mock mode.
+   *
+   * Worth having rather than failing as "not available": the three guards are
+   * the part of this page most worth reviewing, and two of them — the gate's
+   * refusal and "saved, but the sonar bridge is still using the old numbers" —
+   * can only be judged by pressing the button and reading what comes back.
+   *
+   * The gate is re-evaluated here off the world's own state rather than
+   * trusting what the page sent, which is the arrangement on the vessel: the
+   * Jetson refuses, and a page left open on a laptop cannot talk its way
+   * past it.
+   */
+  #saveSetup(args, result) {
+    const decision = gateDecision({
+      streams: {
+        pico: { payload: { armed: this.world.armed, mode: MODE_NAMES[this.world.mode] } },
+        mission: { payload: { state: this.world.missionState } },
+      },
+    });
+    if (!decision.allowed) {
+      result('failed', `${decision.reason} ${decision.remedy}`);
+      return;
+    }
+    if (!args.confirmed) {
+      result(
+        'failed',
+        'This change was not confirmed. Setup is not written on an unconfirmed request.',
+      );
+      return;
+    }
+    const fields = args.fields || {};
+    const ids = Object.keys(fields);
+    if (ids.length === 0) {
+      result('failed', 'Nothing was changed, so nothing was saved.');
+      return;
+    }
+
+    const specs = new Map(FIELDS.map((spec) => [spec.id, spec]));
+    const values = { ...(this.world.mockSetupValues ?? {}) };
+    const appliedBy = new Set();
+    for (const id of ids) {
+      const spec = specs.get(id);
+      if (!spec) {
+        result('failed', `There is no setup field called '${id}'.`);
+        return;
+      }
+      const raw = fields[id]?.value;
+      let value = raw;
+      if (spec.choices.length === 0 && typeof spec.default !== 'string') {
+        value = Number(raw);
+        if (!Number.isFinite(value)) {
+          result('failed', `${spec.label} has to be a number. '${raw}' is not one.`);
+          return;
+        }
+      }
+      values[id] = {
+        value,
+        provenance: fields[id]?.provenance || 'entered',
+        set_utc_ms: this.world.utcMs,
+        set_by: String(args.by || ''),
+        note: String(fields[id]?.note || ''),
+      };
+      if (spec.takes_effect !== 'immediately') appliedBy.add(spec.applied_by);
+    }
+    this.world.mockSetupValues = values;
+
+    // The same distinction the Python makes, and the reason the page does not
+    // say "done": the file is written, and that is all that has happened.
+    result(
+      'confirmed',
+      appliedBy.size
+        ? `${ids.length === 1 ? 'This value' : `${ids.length} values`} saved, but `
+          + `${[...appliedBy].join(' and ')} ${appliedBy.size === 1 ? 'is' : 'are'} `
+          + 'still using the old ones until they re-read them.'
+        : 'Saved, and in use — every value changed is read live.',
+    );
   }
 
   #updateCommands() {

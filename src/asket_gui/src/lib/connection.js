@@ -74,7 +74,7 @@ export function initialState() {
 }
 
 export class Connection {
-  constructor(url, { transport, isMock = false, tileInfo = null } = {}) {
+  constructor(url, { transport, isMock = false, tileInfo = null, setupDoc = null } = {}) {
     this.url =
       url ||
       `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
@@ -86,6 +86,10 @@ export class Connection {
     //: answer is supplied instead of fetched. Keeping this on the connection
     //: means the map component asks one place in both modes.
     this.tileInfo = tileInfo;
+    //: Same arrangement for `/api/setup`. The setup page asks the connection
+    //: in both modes, so what is reviewed in mock mode is the page and not a
+    //: second version of it that reads from somewhere else.
+    this.setupDoc = setupDoc;
     this.state = initialState();
     this.listeners = new Set();
     this.desired = [];

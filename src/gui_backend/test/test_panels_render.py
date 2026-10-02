@@ -16,6 +16,14 @@ because they fail differently:
   contrived fixture but the state the app genuinely starts in, and the one the
   GUI spent an hour in on its first real deployment with every panel blank.
 
+The setup page gets a third pass of its own. `renderToStaticMarkup` runs no
+effects, so rendering `SetupPage` only ever reaches its "Reading the setup…"
+branch — which would make the largest surface here the least covered one. So
+its field rows, file note and save bar are rendered directly against two real
+documents built from the generated inventory: nothing answered, and everything
+answered with the Deployment values old enough to be stale. That is every
+field in both states, which is where this page's branching actually is.
+
 This is a smoke test and makes no claim about what the panels say. It claims
 only that they do not throw, which is the thing nothing else here checks.
 
@@ -53,6 +61,10 @@ PANELS = (
     ("SonarPanel", "panels/SonarPanel.jsx"),
     ("VesselState", "panels/VesselState.jsx"),
     ("StatusStrip", "components/StatusStrip.jsx"),
+    # Not a cockpit panel, but the largest surface here and the one most worth
+    # rendering: it is read by somebody standing on a beach with a tape
+    # measure, and every state it shows is a state nobody had looked at.
+    ("SetupPage", "panels/SetupPage.jsx"),
 )
 
 pytestmark = pytest.mark.skipif(
@@ -88,7 +100,7 @@ def _entry_source() -> str:
         await new Promise((r) => setTimeout(r, 2500));
         const live = connection.getSnapshot();
 
-        const out = {{ streams: Object.keys(live.streams || {{}}), errors: [] }};
+        const out = {{ streams: Object.keys(live.streams || {{}}), errors: [], rows: 0 }};
         for (const [label, state] of [['live', live], ['empty', initialState()]]) {{
           for (const [name, Panel] of PANELS) {{
             try {{
@@ -99,6 +111,7 @@ def _entry_source() -> str:
                   subscribed={{false}}
                   showRaw={{false}}
                   onShowRawChange={{() => {{}}}}
+                  onClose={{() => {{}}}}
                 />,
               );
             }} catch (err) {{
@@ -106,6 +119,75 @@ def _entry_source() -> str:
             }}
           }}
         }}
+
+        // -- the setup page's rows, against real documents ----------------
+        const S = await import('./src/lib/mock/setupProfile.js');
+        const SP = await import('./src/panels/SetupPage.jsx');
+        const now = Date.now();
+        const documents = {{
+          empty: S.setupDocument({{}}, now, {{ path: '/x', missing: true }}),
+          filled: S.setupDocument(S.filledSetupValues(now), now, {{ path: '/x', found: true }}),
+          broken: S.setupDocument({{}}, now, {{ path: '/x', error: 'line 3: bad indent' }}),
+        }};
+        for (const [label, doc] of Object.entries(documents)) {{
+          const staleIds = new Map(doc.stale.map((x) => [x.id, x]));
+          const outstandingIds = new Set(doc.outstanding.map((o) => o.id));
+          try {{
+            renderToStaticMarkup(<SP.SetupFileNote doc={{doc}} />);
+          }} catch (err) {{
+            out.errors.push(`SetupFileNote (${{label}}): ${{err && err.message}}`);
+          }}
+          for (const spec of doc.fields) {{
+            // Each row twice: as it stands, and with an unsaved edit on it.
+            for (const edit of [undefined, '12.5']) {{
+              try {{
+                renderToStaticMarkup(
+                  <SP.SetupField
+                    spec={{spec}}
+                    entry={{doc.values[spec.id] ?? null}}
+                    effective={{doc.effective[spec.id]}}
+                    outstanding={{outstandingIds.has(spec.id)}}
+                    stale={{staleIds.get(spec.id) ?? null}}
+                    edit={{edit}}
+                    onEdit={{() => {{}}}}
+                    onRevert={{() => {{}}}}
+                    focused={{false}}
+                    focusRef={{null}}
+                  />,
+                );
+                out.rows += 1;
+              }} catch (err) {{
+                out.errors.push(
+                  `SetupField ${{spec.id}} (${{label}}, ${{edit ? 'edited' : 'as saved'}}): `
+                  + `${{err && err.message}}`,
+                );
+              }}
+            }}
+          }}
+          // The save bar with nothing dirty, and with two values dirty.
+          for (const dirty of [[], doc.fields.slice(0, 2).map((f) => f.id)]) {{
+            const edits = {{}};
+            for (const id of dirty) edits[id] = '1';
+            try {{
+              renderToStaticMarkup(
+                <SP.SetupSaveBar
+                  dirty={{dirty}}
+                  edits={{edits}}
+                  doc={{doc}}
+                  gate={{{{ allowed: false, reason: 'armed', remedy: 'channel 7' }}}}
+                  state={{live}}
+                  connection={{connection}}
+                  onDiscard={{() => {{}}}}
+                  onSaved={{() => {{}}}}
+                />,
+              );
+            }} catch (err) {{
+              out.errors.push(`SetupSaveBar (${{label}}, ${{dirty.length}} dirty): `
+                + `${{err && err.message}}`);
+            }}
+          }}
+        }}
+
         console.log(JSON.stringify(out));
         process.exit(0);
         """
@@ -159,6 +241,12 @@ def rendered(tmp_path_factory) -> dict:
 
 def test_no_panel_throws(rendered):
     assert rendered["errors"] == []
+
+
+def test_every_setup_field_renders_in_every_state(rendered):
+    """Twenty fields, three documents, two edit states. If this number falls to
+    nothing the page is being declared sound without having been drawn."""
+    assert rendered["rows"] >= 100
 
 
 def test_the_live_state_actually_has_data_in_it(rendered):

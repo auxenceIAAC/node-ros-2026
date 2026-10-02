@@ -221,6 +221,44 @@ is a summary, not a second source — every value in it reads the same payload a
 the panel that owns it, and `test_gui_single_source.py` fails if that stops
 being true.
 
+## The setup page is a second screen, not a panel
+
+`#setup` replaces the cockpit; `#setup/<field id>` opens it with that field
+outlined and scrolled to, which is what the pre-flight's field names link to.
+The hash rather than component state, so the back button works and a link can
+be sent to somebody.
+
+It is a document, not a cockpit: one column, generous line length, and the
+consequence sentence beside every field given room — because that sentence is
+the mechanism by which a value gets measured rather than guessed, and
+`measured: false` sat true for two weeks while the pre-flight named a YAML
+file nobody could open.
+
+Three things are worth knowing about it:
+
+* **It is not a wizard**, and that is argued out in `docs/setup_page.md`.
+  Somebody arriving on a beach with nothing filled in needs the whole list,
+  *ranked*, to decide what to do with the daylight they have. The page is the
+  checklist.
+* **It holds no copy of the field list.** Labels, units, consequences, tiers
+  and choices all arrive with the document from `/api/setup`, generated from
+  `asket_common/setup_profile.py`. The one thing that *is* reimplemented here
+  is the ranking, in `lib/mock/setupProfile.js`, so mock mode can show the
+  empty-beach case — and `test_mock_setup_profile_matches.py` compares the two
+  headlines word for word.
+* **The gate is shown here and enforced on the Jetson.** `gateDecision` in
+  `lib/setup.js` is why the save button can say "the Pico reports the vessel is
+  armed — disarm with RC channel 7" before anybody presses it. It is not the
+  guard: the backend evaluates the same conditions off the vessel's own report
+  at dispatch, because a page left open on a laptop is the accident the
+  condition exists for. `test_setup_gate_mirror.py` holds the two together.
+
+The dev panel's **Setup filled in** toggle switches between a fresh Jetson
+with nothing answered — the default, and the case the page exists for — and
+every field answered with the Deployment values three days old, so the
+staleness notes are visible. Nobody can judge whether an empty setup reads
+correctly without having seen a filled one.
+
 ## Collapsing detail
 
 Forty-five numbers were on screen at once. Nobody monitors forty-five: an

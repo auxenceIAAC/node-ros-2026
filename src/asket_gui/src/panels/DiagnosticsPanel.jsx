@@ -136,9 +136,9 @@ export function DiagnosticsPanel({ state, connection }) {
         cleared — a missing value is a job somebody can finish, and a list of
         them is short enough to finish today.
 
-        The names are still fields rather than links because the setup page
-        does not exist yet. When it does, each becomes a link that opens it
-        with that field in view; nothing else here changes.
+        Each name is a link that opens the setup page with that field in
+        view. That is the half that was missing: naming the field instead of a
+        YAML path only helps if the name lands somewhere.
       */}
       {awaiting.length > 0 && (
         <div className="awaiting-setup">
@@ -154,7 +154,7 @@ export function DiagnosticsPanel({ state, connection }) {
           <ul className="awaiting-setup-list">
             {awaiting.map((item) => (
               <li key={item.id}>
-                <span className="setup-field">{item.setup_field}</span>
+                <SetupFieldLink field={item.setup_field} />
                 <span className="hint"> — {item.name}</span>
               </li>
             ))}
@@ -181,7 +181,7 @@ export function DiagnosticsPanel({ state, connection }) {
               )}
               {item.setup_field && item.status !== 'PASS' && (
                 <div className="hint">
-                  Waiting on <span className="setup-field">{item.setup_field}</span>
+                  Waiting on <SetupFieldLink field={item.setup_field} />
                 </div>
               )}
               {degrading.includes(item.id) && (
@@ -194,5 +194,21 @@ export function DiagnosticsPanel({ state, connection }) {
         </div>
       )}
     </Panel>
+  );
+}
+
+/**
+ * A field name that opens the setup page at that field.
+ *
+ * `#setup/<id>` rather than a callback, so the link is a real URL: the back
+ * button works, and somebody can be sent it. The id is the one the check
+ * carries, which is the one `asket_common/setup_profile.py` declares — there
+ * is no table here mapping check ids to page anchors that could fall behind.
+ */
+function SetupFieldLink({ field }) {
+  return (
+    <a className="setup-field" href={`#setup/${encodeURIComponent(field)}`}>
+      {field}
+    </a>
   );
 }

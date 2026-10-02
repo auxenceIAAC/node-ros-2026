@@ -73,6 +73,30 @@ TIER_VESSEL = "vessel"
 TIER_DEPLOYMENT = "deployment"
 TIERS = (TIER_VESSEL, TIER_DEPLOYMENT)
 
+#: What each tier means, in the words the page uses.
+#:
+#: Here rather than in the frontend because the tiers are not a visual
+#: grouping — they encode the expected lifetime of a value, and that is the
+#: whole reason there are two of them. A page that invented its own
+#: explanation would be free to drift from the one thing the split actually
+#: does, which is decide what goes stale.
+TIER_LABELS = {
+    TIER_VESSEL: "Vessel",
+    TIER_DEPLOYMENT: "Deployment",
+}
+
+TIER_BLURBS = {
+    TIER_VESSEL: (
+        "How the boat is built. Measured once, properly, and then left alone "
+        "— these do not change between missions and they never go stale."
+    ),
+    TIER_DEPLOYMENT: (
+        "Where you are today. The tripod, the water, the depth you expect. "
+        "These are re-checked every time the boat goes in, and the page says "
+        "how old each one is."
+    ),
+}
+
 #: How long a Deployment value stays believable, in milliseconds.
 #:
 #: A day. A survey trip can run over two mornings at the same beach without

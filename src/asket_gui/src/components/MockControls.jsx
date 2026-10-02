@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import { SCENARIOS } from '../lib/mock/scenarios.js';
+import { filledSetupValues } from '../lib/mock/setupProfile.js';
 
 /**
  * The dev control panel. Mock mode only.
@@ -57,6 +58,10 @@ export function MockControls({ connection, open, onOpenChange }) {
     } else if (id === 'tiles') {
       world.mockTilesAvailable = !world.mockTilesAvailable;
       connection.notifyTilesChanged();
+    } else if (id === 'setup_filled') {
+      world.mockSetupValues = Object.keys(world.mockSetupValues ?? {}).length
+        ? {}
+        : filledSetupValues();
     }
     redraw();
   };
@@ -72,6 +77,9 @@ export function MockControls({ connection, open, onOpenChange }) {
     if (item.id === 'confirm_slow') return world.confirmDelayS > 1;
     if (item.id === 'confirm_fails') return world.confirmAlwaysFails;
     if (item.id === 'tiles') return Boolean(world.mockTilesAvailable);
+    if (item.id === 'setup_filled') {
+      return Object.keys(world.mockSetupValues ?? {}).length > 0;
+    }
     return false;
   };
 

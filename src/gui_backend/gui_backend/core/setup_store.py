@@ -36,6 +36,7 @@ the page exists to get somebody out of it.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -170,3 +171,61 @@ def describe(path: Path | str | None = None) -> dict:
         outstanding=[o.id for o in profile.outstanding()],
     )
     return state
+
+
+#: The trace of setup changes, beside the setup file itself.
+#:
+#: One JSON object per line, appended. Append-only and line-oriented on
+#: purpose: a half-written line is one unreadable record rather than a
+#: corrupted history, and a record is worth nothing if the act of adding the
+#: next one can destroy it.
+#:
+#: Beside the setup file rather than inside it because they answer different
+#: questions. The file says what the vessel believes now; this says who
+#: changed what, when, and what the boat was doing at the time — which is the
+#: question somebody opening a survey in three months actually has.
+CHANGE_LOG_NAME = "asket_setup_changes.jsonl"
+
+
+def change_log_path(path: Path | str | None = None) -> Path:
+    setup_path = Path(path) if path is not None else DEFAULT_PATH
+    return setup_path.parent / CHANGE_LOG_NAME
+
+
+def append_change(record, path: Path | str | None = None) -> Path:
+    """Append one change record. Returns the log's path.
+
+    Never raises on a full or read-only disk: a setup change that succeeded
+    must not be reported as failed because its trace could not be written, and
+    the operator finding out at that moment helps nobody. The failure is
+    logged by the caller and the file write — the thing that matters — stands.
+    """
+    log = change_log_path(path)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
+    return log
+
+
+def read_changes(path: Path | str | None = None) -> list[dict]:
+    """Every readable record, oldest first.
+
+    A line that will not parse is skipped rather than raising. The point of an
+    append-only log is that one bad record does not cost the rest, and a
+    history that refuses to open is a history nobody has.
+    """
+    log = change_log_path(path)
+    if not log.is_file():
+        return []
+    out = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            out.append(parsed)
+    return out

@@ -80,7 +80,32 @@ The protocol is documented in [`docs/ws_protocol.md`](../../docs/ws_protocol.md)
 | `core/adapters.py` | ROS messages → the shapes `payloads` expects |
 | `core/tiles.py` | The basemap source ladder: cache, internet, MBTiles, nothing |
 | `core/tile_cache.py` | The disk cache and the upstream fetcher, stdlib only |
+| `core/setup_api.py` | The setup page's one payload: the field inventory and the answers |
+| `core/setup_store.py` | The setup file, written atomically, plus the change log |
+| `core/setup_gate.py` | When the vessel will accept a setup change, and what to say when it will not |
 | `core/server.py` | The FastAPI app |
+
+## `/api/setup` is not a stream, deliberately
+
+Every other thing this backend serves is a measurement arriving at a rate, and
+`core/streams.py` decides who gets it. Setup is a document: it changes when a
+human changes it, and it is needed **most when the link is worst** — a page
+the `minimal` profile could negotiate away would vanish exactly when somebody
+is trying to work out why the profile is minimal.
+
+So `GET /api/setup` sits outside the subscription machinery. It carries the
+field inventory along with the values, so the frontend holds no second copy of
+the twenty labels, units and consequence sentences; for mock mode, where there
+is no Python, that inventory is generated into
+`src/asket_gui/src/lib/mock/setupFields.json` and `test_mock_setup_fields.py`
+fails if it drifts.
+
+Writing is a command, not a `POST`: `save_setup` goes through the same
+`pending` / `confirmed` / `failed` lifecycle as a mode change, because the
+thing an operator needs told apart is "saved" from "saved, and the sonar
+bridge is still using the old numbers". `Hub._save_setup` answers it without
+asking the source at all — see `HANDLED_BY_THE_BACKEND` in
+`test_ros_command_wiring.py`.
 
 ## Configuration
 

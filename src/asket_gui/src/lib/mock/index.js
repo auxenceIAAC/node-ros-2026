@@ -8,6 +8,7 @@
 import { Connection } from '../connection.js';
 import { MockTransport } from './mockTransport.js';
 import { MockWorld } from './world.js';
+import { setupDocument } from './setupProfile.js';
 
 export { MockWorld } from './world.js';
 export { SCENARIOS } from './scenarios.js';
@@ -25,6 +26,21 @@ export function createMockConnection(options = {}) {
       transport = new MockTransport(world, { timeScale: options.timeScale ?? 1 });
       return transport;
     },
+    // No backend to ask, and no file to read, so the document is assembled
+    // from the generated inventory and whatever the dev panel has set. The
+    // default is deliberately *nothing answered*: a fresh Jetson on a beach
+    // is the case this page exists for, and it is the one state nobody had
+    // ever looked at before the page was built.
+    setupDoc: () =>
+      Promise.resolve(
+        setupDocument(
+          world.mockSetupValues ?? {},
+          Date.now(),
+          Object.keys(world.mockSetupValues ?? {}).length
+            ? { path: '/home/njord/.ros/asket_setup.yaml', found: true }
+            : { path: '/home/njord/.ros/asket_setup.yaml', missing: true },
+        ),
+      ),
     // No backend to ask, so the answer is supplied. `tilesAvailable` is
     // switchable from the dev panel, because "the map degrades honestly with no
     // tiles" is a behaviour worth being able to see rather than take on trust.

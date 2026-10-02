@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from . import alarms as alarms_mod
 from .commands import (
     CMD_CUT_PROPULSION,
+    CMD_SAVE_SETUP,
     CMD_SET_MODE,
     CMD_SET_PING_PARAMETERS,
     CMD_SET_PROFILE,
@@ -42,7 +43,7 @@ from .commands import (
     propulsion_cut_confirmed,
     recording_confirmed,
 )
-from . import video_frame
+from . import setup_api, setup_gate, setup_store, video_frame
 from .link_profile import ProfileSelector
 from .shaper import LinkShaper
 from .source import DataSource
@@ -386,6 +387,9 @@ class Hub:
         """Send a command. Returns its *pending* state, never a success."""
         now_utc = self.source.now_utc_ms()
 
+        if name == CMD_SAVE_SETUP:
+            return self._save_setup(args, now_utc, command_id)
+
         if name == CMD_SET_PROFILE:
             profile = args.get("profile")
             self.set_profile(None if profile in (None, "auto") else profile)
@@ -421,6 +425,135 @@ class Hub:
         elif cmd.status != STATUS_FAILED and confirm is not None:
             cmd.detail = outcome.detail or "sent, waiting for the vessel to confirm"
         return cmd.to_dict()
+
+    def _save_setup(self, args: dict, now_utc: int, command_id: str | None) -> dict:
+        """Write the setup file, under all three guards.
+
+        The file lives on the Jetson and `setup_store` is a backend module, so
+        this is handled here rather than passed to the source — the same shape
+        as `set_profile`, which is also the backend's own business.
+
+        Three things have to hold, and each is a different failure mode:
+
+        **The vessel has to be in a state that accepts a change.** Evaluated
+        here, from `self.source.state()` — the Pico's own report — and not from
+        anything the request carried. The accident this is for is a page left
+        open on a laptop, and a guard the page could satisfy by claiming to be
+        satisfied would not catch it.
+
+        **Somebody has to have said yes to this specific change.** A satisfied
+        condition is not a decision that was made. The request must carry
+        `confirmed`, and the refusal when it does not is deliberately blunt,
+        because a save that went through on a page nobody meant to submit is
+        the rush this exists to prevent.
+
+        **Saving is not applying, and this must not claim otherwise.** The
+        command is confirmed when the file is on disk, which is all that has
+        happened; what the vessel is not yet using comes back as
+        `pending_effects`, in the words `PendingEffect.sentence()` chose. The
+        page shows those before anything else, and `apply_setup` is the command
+        that waits for the node to report the new numbers.
+        """
+        cmd = self.commands.begin(CMD_SAVE_SETUP, args, now_utc, command_id=command_id)
+
+        gate = setup_gate.evaluate(self.source.state())
+        if not gate.allowed:
+            self.commands.fail(cmd, f"{gate.reason} {gate.remedy}".strip(), now_utc)
+            result = cmd.to_dict()
+            result["gate"] = gate.to_dict()
+            return result
+
+        if not args.get("confirmed"):
+            self.commands.fail(
+                cmd,
+                "This change was not confirmed. Setup is not written on an "
+                "unconfirmed request.",
+                now_utc,
+            )
+            return cmd.to_dict()
+
+        edits = args.get("fields") or {}
+        if not edits:
+            self.commands.fail(cmd, "Nothing was changed, so nothing was saved.", now_utc)
+            return cmd.to_dict()
+
+        by = str(args.get("by") or "")
+        try:
+            current = setup_store.load()
+        except setup_store.SetupFileError as exc:
+            # Refusing rather than overwriting. A file that will not parse
+            # holds answers somebody entered, and saving on top of it would
+            # discard them silently — which is the one direction this must
+            # never fail.
+            self.commands.fail(
+                cmd,
+                f"The existing setup file will not parse ({exc}), so it was not "
+                "overwritten. Fix or move it first.",
+                now_utc,
+            )
+            return cmd.to_dict()
+
+        try:
+            updated, changed = setup_api.apply_edits(current, edits, utc_ms=now_utc, by=by)
+        except setup_api.EditError as exc:
+            self.commands.fail(cmd, str(exc), now_utc)
+            return cmd.to_dict()
+
+        if not changed:
+            # Every edit matched what was already answered. Reported rather
+            # than written, because writing would restamp the dates and the
+            # staleness note — the only thing that says "this station position
+            # is from a different beach" — would reset on a change nobody made.
+            self.commands.settle(
+                cmd,
+                "Those values were already the ones in use. Nothing was written, "
+                "so the dates are unchanged.",
+                now_utc,
+            )
+            return cmd.to_dict()
+
+        try:
+            written = setup_store.save(updated, utc_ms=now_utc, by=by)
+        except OSError as exc:
+            self.commands.fail(cmd, f"The setup file could not be written: {exc}", now_utc)
+            return cmd.to_dict()
+
+        record = setup_gate.SetupChangeRecord(
+            utc_ms=now_utc,
+            by=by,
+            field_ids=changed,
+            content_hash=written.content_hash(),
+            vessel_state=setup_gate.describe_vessel_state(self.source.state()),
+            note=str(args.get("note") or ""),
+        )
+        try:
+            setup_store.append_change(record)
+        except OSError as exc:
+            # The change succeeded. Saying it failed because its trace could
+            # not be written would send somebody looking for a problem that is
+            # not there, so this is logged and the save stands.
+            _log.warning("setup change record not written: %s", exc)
+
+        effects = updated.pending_effects(changed)
+        detail = " ".join(effect.sentence() for effect in effects) or (
+            "Saved, and in use — every value changed is read live."
+        )
+        self.commands.settle(cmd, detail, now_utc)
+        result = cmd.to_dict()
+        result["changed"] = list(changed)
+        result["content_hash"] = written.content_hash()
+        result["pending_effects"] = [
+            {
+                "takes_effect": effect.takes_effect,
+                "applied_by": effect.applied_by,
+                "reload_service": effect.reload_service,
+                "field_ids": list(effect.field_ids),
+                "can_be_applied_from_here": effect.can_be_applied_from_here,
+                "sentence": effect.sentence(),
+            }
+            for effect in effects
+        ]
+        return result
 
     # -- the loop ---------------------------------------------------------
 

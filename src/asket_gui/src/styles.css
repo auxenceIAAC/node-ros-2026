@@ -665,3 +665,173 @@ details.advanced { border-top: 1px solid var(--line); margin-top: 6px; }
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.08);
 }
+
+/* -- the setup page -------------------------------------------------------
+ *
+ * A document, not a cockpit. The cockpit is dense because every panel is
+ * competing for a glance; this is read, line by line, by somebody standing
+ * still with a tape measure or a tripod. So it is a single column with
+ * generous line length and the consequence sentence given room, because that
+ * sentence is the whole mechanism by which a value gets measured rather than
+ * guessed.
+ */
+
+.setup-page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 16px 48px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.setup-topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  padding: 12px 0 8px;
+  border-bottom: 1px solid var(--line);
+  z-index: 2;
+}
+
+.setup-topbar h1 { margin: 0; font-size: 1.3rem; }
+.setup-topbar .spacer { flex: 1 1 auto; }
+
+/* The sentence the whole page is organised around. Large, because a page that
+ * buried "five values have never been set" in body text would be a page
+ * somebody scrolls past. */
+.setup-headline {
+  margin: 14px 0 6px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.setup-unknown { margin: 10px 0; }
+.setup-unknown ul { margin: 4px 0; }
+
+.setup-tier { margin-top: 24px; }
+
+.setup-tier > h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 1.05rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
+
+.setup-tier-blurb { margin: 6px 0 12px; max-width: 42rem; }
+
+.setup-fields { display: flex; flex-direction: column; gap: 2px; }
+
+.setup-field {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  padding: 8px 10px;
+  background: var(--panel);
+}
+
+/* Four states, visibly apart. Collapsing any two of them is how this page
+ * would start lying about what the vessel has been told. */
+.setup-field.outstanding { border-left-color: var(--warn); }
+.setup-field.edited { border-left-color: var(--pending); background: #f7f4ff; }
+.setup-field.focused { outline: 3px solid var(--info-fill); outline-offset: 1px; }
+
+.setup-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setup-field-head label { font-weight: 600; }
+.setup-field-head .units { font-weight: 400; color: var(--absent); }
+
+.setup-field-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.setup-field-input input,
+.setup-field-input select {
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-width: 12rem;
+}
+
+.setup-consequence {
+  margin: 4px 0;
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 40rem;
+}
+
+/* The ones that produce plausible-looking wrong data rather than an obvious
+ * failure. Marked differently because that is the ranking an operator with
+ * limited daylight should work in. */
+.setup-consequence.corrupts { color: var(--warn); }
+
+.setup-field-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.setup-savebar {
+  position: sticky;
+  bottom: 0;
+  margin-top: 28px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-left-color: var(--pending);
+  background: var(--bg);
+}
+
+.setup-savebar ul { margin: 4px 0 8px; }
+
+.setup-attribution {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 10px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.setup-attribution input {
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.okline { font-size: 12px; color: var(--ok); font-weight: 700; }
+
+/* The pre-flight's field names, now links into this page. Kept looking like
+ * the code they name rather than like prose, so it is obvious they are
+ * identifiers and not a sentence. */
+a.setup-field {
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+button.link,
+.topbar-link {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}

@@ -358,7 +358,7 @@ is reversible; applying changes how the vessel places every sounding, needs
 the boat in a known state, and needs confirming afterwards. Collapsing them
 would hide the dangerous half inside the safe half.
 
-## Where I would argue with myself
+## Where I would argue with myself about the waivers
 
 **`battery.charge` may belong in the unwaivable group.** A flat battery does
 not corrupt data, but it does put a drifting boat somewhere a human has to go
@@ -514,16 +514,85 @@ and after capturing the station and measuring the hull, reads:
 
 
 
-1. The provenance model and the setup file format, ROS-free and testable with
-   no hardware. This is the part everything else reads.
-2. `setup_field` on `CheckResult`, and the pre-flight panel rendering links.
-   Small, and it is the change most likely to get `measured: false` cleared.
-3. The page: Vessel and Deployment tiers, staleness dates, the "two things
-   need filling in" header.
+1. ~~The provenance model and the setup file format~~ — **built**
+   (`asket_common/setup_profile.py`, `gui_backend/core/setup_store.py`).
+2. ~~`setup_field` on `CheckResult`, and the pre-flight panel rendering
+   links~~ — **built**. The names are now links: `#setup/<field id>` opens the
+   page with that field outlined and scrolled to. Naming the field rather than
+   a YAML path only helps if the name lands somewhere.
+3. ~~The page: Vessel and Deployment tiers, staleness dates, the headline~~ —
+   **built** (`asket_gui/src/panels/SetupPage.jsx`, `gui_backend/core/setup_api.py`,
+   `GET /api/setup`).
 4. Capture-from-vessel for station position and boresight, with fix quality
    recorded.
-5. The Jetson-side accept condition, and the refusal wording.
+5. ~~The Jetson-side accept condition, and the refusal wording~~ — **built**
+   (`setup_gate.py`, `Hub._save_setup`). What is *not* built is the other half
+   of applying: see below.
 6. Saved deployments.
+
+### What came out of building steps 3 and 5
+
+**The page is HTTP, not a stream, and that turned out to be a safety
+argument rather than a convenience one.** Everything else in this GUI is a
+measurement arriving at a rate, and the link profile decides who gets it.
+Setup is a document, it changes when a human changes it, and it is needed
+*most when the link is worst* — a page the `minimal` profile could negotiate
+away would vanish exactly when somebody is trying to work out why the profile
+is minimal. So `/api/setup` sits outside the subscription machinery.
+
+**The field inventory travels with the values**, so there is no second copy of
+the twenty labels, units, consequence sentences and tier assignments in the
+frontend. A field added to `FIELDS` appears on the page, with its consequence,
+and no JavaScript changes. For mock mode — where there is no Python — the
+inventory is generated into `setupFields.json` and a test fails if it drifts,
+the same arrangement that holds the negotiation table honest. The *ranking*
+cannot be generated, so `lib/mock/setupProfile.js` mirrors it and
+`test_mock_setup_profile_matches.py` compares the two headlines word for word
+across eight profiles. A reviewer reading the mock is reading the sentence the
+vessel would produce, or the review is worth nothing.
+
+**The page holds a copy of the gate, and it is not the guard.** It exists so
+the button can say *why* it is not offering itself before anybody presses it.
+`test_setup_gate_mirror.py` runs both over every branching state and compares
+the wording, because the failure mode of drift here is specific and nasty: a
+button that looks available and always fails, or one that refuses a change the
+vessel would have taken. Both teach people to stop believing the page.
+
+**`CommandManager` needed a success counterpart to `fail`.** It had `fail` for
+the point of sending and `issue(confirm=None)` for work with nothing to
+observe, which settles immediately as "applied". Neither fits work that the
+backend does itself and that can genuinely go wrong — a setup write can be
+refused by the gate, rejected for a bad value, or fail on a full disk, and
+each is a different sentence. So `begin`/`settle`, and a test that no save is
+ever left pending: one that was would time out with "no confirmation from the
+vessel", which would be a lie about where the fault was.
+
+**One bad value writes none of them.** A tape-measure session changes seven
+numbers at once, and four saved with three rejected is a state no file
+describes and nobody could debug. The profile is immutable, so this falls out
+rather than needing to be arranged.
+
+**Saving an unchanged value writes nothing**, and this is not an
+optimisation. The staleness dates are the only thing that says "this station
+position is from a different beach"; opening the page and pressing save would
+reset every one of them on a change nobody made.
+
+### What is still missing from "applied"
+
+`save_setup` is done and honest: it writes the file and reports, in the
+`PendingEffect` wording, that `omniscan_bridge` is still using the old numbers
+until it re-reads them. `apply_setup` — the command that calls
+`~/reload_mounting` and is confirmed by the geometry fingerprint the node
+reports — has its parts built (`geometry_fingerprint`, the reload service, the
+`mounting_reloaded` predicate) and is **not wired**.
+
+It needs one more thing first, and it is a real design step rather than
+plumbing: the setup file **overlays** each package's own YAML, so
+`omniscan_bridge` has to read the overlay on top of `mounting.yaml` before a
+reload can change anything. Until that exists, wiring `apply_setup` would
+produce a command that correctly reports failure every time — the fingerprint
+would never move — which is honest and useless. That is the next piece of
+work, and it is deliberately not hidden inside this one.
 
 Steps 1–3 are laptop work against the simulator, which is the same split that
 has worked for the last three pieces.

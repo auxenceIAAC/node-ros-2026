@@ -136,6 +136,52 @@ class CommandManager:
             self._pending[cmd.id] = cmd
         return cmd
 
+    def begin(
+        self,
+        name: str,
+        args: dict,
+        now_utc_ms: int,
+        command_id: str | None = None,
+    ) -> Command:
+        """Register a command the backend resolves itself, within this call.
+
+        `issue` with no predicate settles immediately as "applied", which is
+        right for a profile change — there is nothing to observe and nothing
+        that can go wrong. It is wrong for work that *can* go wrong without a
+        vessel being involved: writing the setup file can be refused by the
+        gate, rejected for a bad value, or fail on a full disk, and each of
+        those is a different sentence the operator needs.
+
+        So this leaves the command pending and the caller must end it with
+        `settle` or `fail` before returning. Every path in such a handler
+        resolves it; one that did not would time out with "no confirmation
+        from the vessel", which would be a lie about where the fault was.
+        """
+        cmd = Command(
+            id=command_id or uuid.uuid4().hex[:12],
+            name=name,
+            args=dict(args),
+            issued_utc_ms=now_utc_ms,
+            timeout_s=self.timeout_s,
+        )
+        self._pending[cmd.id] = cmd
+        return cmd
+
+    def settle(self, cmd: Command, detail: str, now_utc_ms: int) -> Command:
+        """Mark a command done, with what actually happened.
+
+        The counterpart of `fail` for work the backend did itself. `detail` is
+        not decoration: for a setup save it is the difference between "saved,
+        and in use" and "saved, but the sonar bridge is still using the old
+        numbers", and those are the two things somebody most needs told apart.
+        """
+        self._pending.pop(cmd.id, None)
+        cmd.status = STATUS_CONFIRMED
+        cmd.detail = detail
+        cmd.resolved_utc_ms = now_utc_ms
+        self._archive(cmd)
+        return cmd
+
     def fail(self, cmd: Command, detail: str, now_utc_ms: int) -> Command:
         """Mark a command failed at the point of sending."""
         self._pending.pop(cmd.id, None)

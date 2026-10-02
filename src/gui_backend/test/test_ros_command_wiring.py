@@ -140,6 +140,24 @@ def test_an_unknown_command_names_itself():
 #: If you wire one, delete it from here and the test below will hold you to it.
 KNOWN_NOT_WIRED = {"export_mission", "delete_mission"}
 
+#: Commands the **backend** answers itself, which never reach a source at all.
+#:
+#: A third category, and it has to be a separate one. These are not buttons
+#: that reach nothing — they are fully wired — but the thing they reach is the
+#: Jetson's own filesystem rather than a node, so auditing them against
+#: ``RosSource`` asks the wrong question. Putting them in ``KNOWN_NOT_WIRED``
+#: would make that list stop meaning what it says, and would then fail
+#: confusingly if somebody ever did add a vessel-side service for one.
+#:
+#: * ``save_setup`` writes the setup file. The file is on the Jetson and
+#:   ``setup_store`` is a backend module; the gate that refuses it reads the
+#:   vessel's state but the work is local. See ``Hub._save_setup``.
+#:
+#: Membership is not taken on trust: the test below proves each one is
+#: resolved by the hub without the source being asked, against a source that
+#: raises if it is.
+HANDLED_BY_THE_BACKEND = {"save_setup"}
+
 
 def _commands_the_gui_can_send() -> set[str]:
     pattern = re.compile(r"connection\.command\(\s*'([a-z_]+)'")
@@ -167,6 +185,9 @@ def test_every_gui_command_is_either_wired_or_knowingly_not(command):
     panel now shows — but the operator finding out on a beach is too late, and
     this is the check that finds it here instead.
     """
+    if command in HANDLED_BY_THE_BACKEND:
+        pytest.skip(f"{command!r} is answered by the hub; see the test below")
+
     outcome = _source().send_command(command, {})
     unwired = not outcome.accepted and "is not wired up" in outcome.detail
 
@@ -292,3 +313,59 @@ def test_no_report_yet_is_absent_rather_than_invented():
     source = _source()
     source.latest = {}
     assert source.snapshot("diagnostics") is None
+
+
+# -- the third category ----------------------------------------------------
+
+
+class _SourceThatMustNotBeAsked:
+    """A source that fails loudly if a command is passed to it.
+
+    The point of ``HANDLED_BY_THE_BACKEND`` is that these never reach a
+    source. Asserting that with a stand-in which raises is the difference
+    between a category and a place to put things that fail the audit.
+    """
+
+    def __init__(self, state: dict) -> None:
+        self._state = state
+
+    def now_utc_ms(self) -> int:
+        return 1_789_932_000_000
+
+    def state(self) -> dict:
+        return self._state
+
+    def send_command(self, name, args):  # pragma: no cover - must not be reached
+        raise AssertionError(
+            f"{name!r} is listed as handled by the backend but was passed to the source"
+        )
+
+
+@pytest.mark.parametrize("command", sorted(HANDLED_BY_THE_BACKEND))
+def test_a_backend_handled_command_is_resolved_without_asking_the_source(
+    command, tmp_path, monkeypatch,
+):
+    from gui_backend.core import setup_store
+    from gui_backend.core.hub import Hub
+
+    monkeypatch.setattr(setup_store, "DEFAULT_PATH", tmp_path / "asket_setup.yaml")
+    hub = Hub(_SourceThatMustNotBeAsked(
+        {"pico": {"armed": False, "mode": "MANUAL"}, "mission": {"state": "IDLE"}}
+    ))
+
+    result = hub.issue_command(command, {
+        "fields": {"vessel.sonar.side": {"value": "port"}},
+        "by": "audit",
+        "confirmed": True,
+    })
+
+    # Resolved either way, and never left pending — a command the backend
+    # answers itself that stayed pending would time out claiming the vessel
+    # never confirmed, which would be a lie about where the fault was.
+    assert result["status"] in {"confirmed", "failed"}
+    assert hub.commands.pending == []
+
+
+def test_the_two_categories_do_not_overlap():
+    """A command in both lists would be a decision nobody made."""
+    assert not (KNOWN_NOT_WIRED & HANDLED_BY_THE_BACKEND)

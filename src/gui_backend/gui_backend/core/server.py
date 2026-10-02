@@ -39,6 +39,7 @@ from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import setup_api, setup_store
 from .hub import ClientSession, Hub
 from .shaper import LinkShaper
 from .tile_cache import TileCache, UpstreamTiles
@@ -155,6 +156,34 @@ def create_app(
                 "profile": hub.selector.to_dict(),
                 "source": hub.source.describe(),
             }
+        )
+
+    @app.get("/api/setup")
+    async def setup() -> JSONResponse:
+        """The setup page's document: the field inventory and the answers.
+
+        Outside the subscription machinery on purpose. Setup is needed most
+        when the link is worst, and a page that a `minimal` profile could
+        negotiate away would vanish exactly when somebody is trying to find
+        out why the profile is minimal. See `core/setup_api.py`.
+
+        A file that will not parse is reported, not raised. "There is no file"
+        and "there is a file and it is broken" send somebody to two different
+        places, and a 500 says neither.
+        """
+        try:
+            profile = setup_store.load()
+        except setup_store.SetupFileError:
+            # `describe` carries the error text; the page renders the defaults
+            # behind it so the inventory is still readable while the file is
+            # being fixed.
+            profile = setup_store.SetupProfile()
+        return JSONResponse(
+            setup_api.payload(
+                profile,
+                now_utc_ms=hub.source.now_utc_ms(),
+                file_state=setup_store.describe(),
+            )
         )
 
     @app.get("/api/tiles/info")

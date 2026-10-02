@@ -216,4 +216,20 @@ export const SCENARIOS = [
       },
     ],
   },
+  {
+    group: 'Setup',
+    items: [
+      {
+        id: 'setup_filled',
+        label: 'Setup filled in',
+        kind: 'toggle',
+        detail:
+          'Off is the default and the case the setup page exists for: a fresh Jetson, '
+          + 'nothing answered, no file. On answers every field \u2014 the mounting '
+          + 'geometry measured, the station captured \u2014 with the Deployment values '
+          + 'dated three days ago, so the staleness notes are visible. Nobody can judge '
+          + 'whether an empty setup reads correctly without having seen a filled one.',
+      },
+    ],
+  },
 ];
