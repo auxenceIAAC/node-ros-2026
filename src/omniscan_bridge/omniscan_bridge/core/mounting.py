@@ -22,6 +22,7 @@ validated a config the bridge did not use would be worse than no check at all.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +63,20 @@ class MountingProvenance:
     #: Fields present in the file but not recognised. Almost always a typo in a
     #: measured value, which would otherwise be discarded in silence.
     unknown_fields: list[str] = field(default_factory=list)
+    #: A short digest of the geometry actually in use.
+    #:
+    #: Exists so that "the node reloaded" can be confirmed rather than
+    #: inferred. The setup page knows the digest of what it wrote; when the
+    #: bridge reports the same one, the numbers somebody measured are the
+    #: numbers the sonar is being placed by — and not before. Safety rule 4
+    #: applied to configuration: displayed state is confirmed state, and a
+    #: file having been written is not the vessel having read it.
+    #:
+    #: Of the geometry, deliberately, not of the whole file. Editing a comment
+    #: or a `notes:` line does not change where the transducer is, and a
+    #: confirmation that moved on cosmetic edits would train people to ignore
+    #: it.
+    fingerprint: str = ""
 
     @property
     def provisional(self) -> bool:
@@ -78,10 +93,38 @@ class MountingProvenance:
             "missing": self.missing,
             "error": self.error,
             "unknown_fields": list(self.unknown_fields),
+            "fingerprint": self.fingerprint,
         }
 
 
+def geometry_fingerprint(mounting: SonarMounting) -> str:
+    """A short digest of the numbers that place the transducer.
+
+    Rounded before hashing, to the precision anybody could actually measure to:
+    a lever arm is quoted to the centimetre and a tilt to a tenth of a degree,
+    so a float that differs in its sixteenth decimal place is the same
+    measurement and must not read as a different one.
+    """
+    canonical = ",".join(
+        f"{round(float(getattr(mounting, name)), 4):.4f}" for name in _GEOMETRY_FIELDS
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
 def load_mounting(path: str | Path | None) -> tuple[SonarMounting, MountingProvenance]:
+    """Read ``mounting.yaml``, and stamp the result with its fingerprint.
+
+    A wrapper rather than eight edits: :func:`_load_mounting` returns from a
+    good many places — missing file, unreadable, bad YAML, empty, each kind of
+    malformed — and a fingerprint set at seven of them would be a fingerprint
+    absent at the eighth, which is the one somebody would hit.
+    """
+    mounting, provenance = _load_mounting(path)
+    provenance.fingerprint = geometry_fingerprint(mounting)
+    return mounting, provenance
+
+
+def _load_mounting(path: str | Path | None) -> tuple[SonarMounting, MountingProvenance]:
     """Read ``mounting.yaml``. Never raises — the caller gets a usable geometry
     and an honest account of where it came from.
 

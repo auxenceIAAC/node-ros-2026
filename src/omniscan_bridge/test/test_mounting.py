@@ -117,5 +117,5 @@ def test_provenance_survives_the_round_trip_to_a_dict(tmp_path):
     assert d["unknown_fields"] == []
     assert set(d) == {
         "measured", "measured_by", "measured_utc", "notes",
-        "path", "found", "missing", "error", "unknown_fields",
+        "path", "found", "missing", "error", "unknown_fields", "fingerprint",
     }

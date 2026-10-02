@@ -303,7 +303,62 @@ And: **a waived check that starts passing clears its own waiver.** Otherwise a
 stale waiver hides a real regression later, which turns a safety mechanism
 into a blindfold.
 
-### Where I would argue with myself
+### Three guards on a change, against three failure modes
+
+They are not alternatives, and the reason to have all three is that each
+leaves a different hole on its own.
+
+**The automatic condition prevents the accident.** The Jetson accepts a setup
+change only when the Pico reports *disarmed* and the recorder reports *not
+recording*. Nobody intends to change a lever arm with the boat under way; it
+happens because a page was left open on a laptop and somebody leaned on it, or
+because a tab from this morning is still showing yesterday's form. Enforced on
+state read from the vessel, never on anything the browser claims — a guard in
+the page is a guard a stale page does not have.
+
+Armed outranks recording when both are true, because telling somebody to stop
+the recording while the boat can also move is naming the lesser problem. And
+an *unreadable* Pico refuses too: "we cannot see it" is not a known safe
+state, it is a real condition — a lost serial link, an unparseable `STATE`
+line — and letting a change through on state nobody can read defeats the
+point.
+
+**The explicit confirmation prevents the rush**, and leaves a trace. A
+condition that is satisfied is not a decision that was made. The second step
+is a human saying yes to this specific change, and it writes a record into the
+mission directory — who, when, which fields, the setup's digest, and what the
+vessel was doing at the time. Into the mission directory rather than the GUI,
+so it survives the browser closing and travels with the data it affects:
+somebody opening a survey in three months can see the lever arm was changed
+forty minutes before it started. The state is recorded even when the change
+was *allowed*, because a record that only appeared on refusal would make the
+common case invisible, and the common case is the one somebody wants to
+reconstruct.
+
+**Confirmed state prevents the lie.** Safety rule 4, applied to configuration:
+the page does not say "done" when the file has been written, and not when the
+reload was sent — only when the node *reports* the geometry it is using and
+that geometry is the one somebody just measured. The three are genuinely
+different, and the gap between them is where the failure lives: a file can be
+written while a node carries on with the old numbers, and a reload can be
+refused — because the file will not parse — while the page shows a tick.
+
+`MountingProvenance` therefore carries a **fingerprint** of the geometry in
+use. Comparing fingerprints rather than fields answers the right question: not
+"did something change" but "is the vessel on the exact geometry I sent". A
+reload that landed on somebody else's value — two people saving at once —
+reads as failed, where a field comparison with a tolerance would quietly call
+it success. It is a digest of the *geometry*, not the file, so editing a
+comment does not fire it; and it is rounded to the precision anybody could
+measure to, so a float differing in its sixteenth decimal place after a YAML
+round trip is the same measurement rather than a reload that never confirms.
+
+Saving and applying are **two commands**, not one. Saving is a file write and
+is reversible; applying changes how the vessel places every sounding, needs
+the boat in a known state, and needs confirming afterwards. Collapsing them
+would hide the dangerous half inside the safe half.
+
+## Where I would argue with myself
 
 **`battery.charge` may belong in the unwaivable group.** A flat battery does
 not corrupt data, but it does put a drifting boat somewhere a human has to go

@@ -527,18 +527,25 @@ class OmniscanBridge(Node):
             return response
 
         self.mounting, self.mounting_provenance = mounting, provenance
+
+        # The fingerprint goes back in the response as well as into the
+        # reported provenance. The page compares it against what it wrote, and
+        # only then says the change took effect — not when the file was
+        # written, and not when this service was called. Safety rule 4 applied
+        # to configuration: displayed state is confirmed state.
         if provenance.provisional:
             response.success = True
             response.message = (
                 "Reloaded, and still PROVISIONAL: the file says nobody has "
-                "measured the tilt or the lever arm."
+                f"measured the tilt or the lever arm. [{provenance.fingerprint}]"
             )
             self.get_logger().warning("mounting reloaded, still PROVISIONAL")
         else:
             response.success = True
             response.message = (
                 f"Reloaded. Measured by {provenance.measured_by or 'unrecorded'}, "
-                f"{provenance.measured_utc or 'date unrecorded'}."
+                f"{provenance.measured_utc or 'date unrecorded'}. "
+                f"[{provenance.fingerprint}]"
             )
             self.get_logger().info(f"mounting reloaded from {provenance.path}")
         return response

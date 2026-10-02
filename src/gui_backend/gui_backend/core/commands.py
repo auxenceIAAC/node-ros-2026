@@ -49,6 +49,14 @@ CMD_RUN_SYSTEM_TEST = "run_system_test"
 CMD_SET_PROFILE = "set_profile"
 CMD_INJECT_FAULT = "inject_fault"
 CMD_CLEAR_FAULT = "clear_fault"
+#: Save the setup, and make the vessel pick it up.
+#:
+#: Two commands rather than one. Saving is a file write and is reversible;
+#: applying is the vessel changing how it places every sounding, needs the
+#: boat in a known state, and needs confirming afterwards. Collapsing them
+#: would make the dangerous half invisible inside the safe half.
+CMD_SAVE_SETUP = "save_setup"
+CMD_APPLY_SETUP = "apply_setup"
 
 #: Commands that change what the vessel is doing. These get the two-step
 #: confirmation in the UI and the confirmation watch here.
@@ -202,6 +210,35 @@ def recording_confirmed(should_be_recording: bool):
         mission = state.get("mission") or {}
         is_recording = mission.get("state") == "RECORDING"
         return is_recording == should_be_recording
+
+    return check
+
+
+def mounting_reloaded(fingerprint: str):
+    """The sonar bridge is now placing soundings with these numbers.
+
+    Safety rule 4 applied to configuration. The page does not say "done" when
+    the file has been written, and not when the reload command was sent — only
+    when the node *reports* the geometry it is using and that geometry is the
+    one somebody just measured.
+
+    The three are genuinely different and the gap between them is where the
+    failure lives: a file can be written while a node carries on with the old
+    lever arm, and a reload can be refused — because the file will not parse —
+    while the page shows a tick. That is the same class of problem as a
+    pre-flight warning naming a YAML nobody can open: it looks finished, and
+    it is not.
+
+    Compared by fingerprint rather than by field, because the question is not
+    "did something change" but "is the vessel on the exact geometry I just
+    sent". A reload that landed on a *different* new value — somebody else
+    saved in between — must read as failed, and a field-by-field comparison
+    with a tolerance would quietly call it success.
+    """
+
+    def check(state: dict) -> bool:
+        mounting = (state.get("mounting") or {})
+        return bool(fingerprint) and mounting.get("fingerprint") == fingerprint
 
     return check
 
