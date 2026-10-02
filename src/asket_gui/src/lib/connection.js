@@ -32,7 +32,7 @@ const SKEW_WINDOW = 32;
 // Notices that a single incoming frame disproves.
 const SILENCE_NOTICES = new Set(['no_streams', 'nothing_emitted', 'tick_failed']);
 
-function initialState() {
+export function initialState() {
   return {
     connected: false,
     connecting: true,

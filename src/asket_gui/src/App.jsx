@@ -34,7 +34,7 @@ const NO_DATA_AFTER_MS = 6000;
  * and why. Nothing arrives that is not listed here — the backend pushes
  * nothing by default.
  */
-const SUBSCRIPTIONS = [
+export const SUBSCRIPTIONS = [
   { name: 'vessel', rate_hz: 5 },
   { name: 'pico', rate_hz: 2 },
   { name: 'heading', rate_hz: 2 },

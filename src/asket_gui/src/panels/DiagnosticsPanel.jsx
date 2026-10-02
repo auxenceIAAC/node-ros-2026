@@ -38,10 +38,6 @@ export function DiagnosticsPanel({ state, connection }) {
     .sort((a, b) => (a.issued_utc_ms || 0) - (b.issued_utc_ms || 0))
     .pop();
   const pending = lastRun?.status === 'pending';
-  // Checks waiting on a value somebody has to enter, rather than on something
-  // being repaired. A check only carries `setup_field` when the honest answer
-  // is "nobody has told us this yet".
-  const awaiting = items.filter((item) => item.setup_field && item.status !== 'PASS');
 
   // A report that predates the press has not answered it. Saying "GO" from a
   // report taken before the button was touched would be the panel answering a
@@ -54,6 +50,11 @@ export function DiagnosticsPanel({ state, connection }) {
 
   const items = report?.items || [];
   const degrading = report?.history?.degrading || [];
+
+  // Checks waiting on a value somebody has to enter, rather than on something
+  // being repaired. A check only carries `setup_field` when the honest answer
+  // is "nobody has told us this yet".
+  const awaiting = items.filter((item) => item.setup_field && item.status !== 'PASS');
 
   // Anything short of a clean GO opens the list. The verdict sentence names the
   // first problem; the list is what you act on, and having to ask for it is one

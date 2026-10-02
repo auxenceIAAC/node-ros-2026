@@ -102,6 +102,10 @@ export const DEFAULTS = {
   magNoiseDeg: 0.8,
   gnssCompassNoiseDeg: 0.2,
 
+  // Read by two models: the heave the vessel rides, and the sea state the
+  // two-ray path loss scatters off. They are the same quantity, so this is
+  // one key — a second one for the link was added here and silently
+  // overrode this value until esbuild complained.
   waveHeightM: 0.4,
   wavePeriodS: 4.5,
 
@@ -120,7 +124,6 @@ export const DEFAULTS = {
   stationHeightM: 2.9,
   stationBoresightDeg: 0,
   vesselAntennaHeightM: 1.0,
-  waveHeightM: 0.5,
 
   sonarRangeM: 30,
   sonarGain: 4,
