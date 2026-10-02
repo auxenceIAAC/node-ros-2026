@@ -577,25 +577,57 @@ optimisation. The staleness dates are the only thing that says "this station
 position is from a different beach"; opening the page and pressing save would
 reset every one of them on a change nobody made.
 
-### What is still missing from "applied"
+### Applied, end to end
 
-`save_setup` is done and honest: it writes the file and reports, in the
-`PendingEffect` wording, that `omniscan_bridge` is still using the old numbers
-until it re-reads them. `apply_setup` — the command that calls
-`~/reload_mounting` and is confirmed by the geometry fingerprint the node
-reports — has its parts built (`geometry_fingerprint`, the reload service, the
-`mounting_reloaded` predicate) and is **not wired**.
+`apply_setup` is wired, and the overlay it needed is built.
 
-It needs one more thing first, and it is a real design step rather than
-plumbing: the setup file **overlays** each package's own YAML, so
-`omniscan_bridge` has to read the overlay on top of `mounting.yaml` before a
-reload can change anything. Until that exists, wiring `apply_setup` would
-produce a command that correctly reports failure every time — the fingerprint
-would never move — which is honest and useless. That is the next piece of
-work, and it is deliberately not hidden inside this one.
+`omniscan_bridge` now reads the setup file **on top of** its own
+`mounting.yaml`, field by field, and only where a field has been *answered*.
+That last clause is the whole safety of it: every field carries a shipped
+default inside the profile, so taking values without checking provenance would
+mean that saving anything at all on the page silently reverted every
+measurement in `mounting.yaml`. The page would appear to work while destroying
+the numbers it exists to collect.
 
-Steps 1–3 are laptop work against the simulator, which is the same split that
-has worked for the last three pieces.
+With the overlay in place the chain closes:
+
+| | |
+|---|---|
+| `save_setup` | writes the file, and says the bridge is still on the old numbers |
+| `apply_setup` | calls `~/reload_mounting`, and is **not** confirmed by the call returning |
+| the bridge | re-reads both files, reports the geometry and its digest on `/diagnostics` |
+| the hub | sees the digest it predicted, and only then confirms |
+
+The digest is predicted from **what the node says it is running on now** plus
+the answered overlay fields — the same merge the node will perform. It cannot
+be computed from the setup file alone, because the file is an overlay and only
+the node knows the package default. When the node is not reporting a geometry
+there is nothing to predict, and `apply_setup` refuses rather than dispatching
+a command whose only possible outcome is a timeout that reads as the vessel
+having rejected the change.
+
+Three things came out of building it that the design above did not have:
+
+**`measured` is per-field now, so the single flag has to be earned by all six.**
+A tilt measured on the page with the lever arm still on an unchecked default is
+not a measured geometry, and the pre-flight's WARN is right to stay up. The
+flag clears when every geometry field is either measured on the page or left to
+a base file that claims it was measured — which is stricter than the single
+`measured: true` it replaces.
+
+**The confirmation predicate had nothing to read.** `mounting_reloaded` resolves
+against `source.state()`, and `mounting` was only ever in the *pre-flight's*
+state dict, never that one. The predicate existed, was tested in isolation, and
+could never have fired on a real reload. It is in both now, and `RosSource`
+reads it off `/diagnostics` — which it was not subscribed to at all.
+
+**The remedy that sat unactioned for two weeks named a file.** It now names the
+Setup page, and the pre-flight's field names are links into it. Three tests
+asserted the old wording — that the warning must name the path — and they were
+asserting a requirement that demonstrably did not work: the path is on the
+Jetson behind an SSH session nobody in the club has. They now assert the new
+one. The path is still named wherever the *file* is the problem, because there
+you do need to know which file.
 
 ## Open questions this closes, and does not
 

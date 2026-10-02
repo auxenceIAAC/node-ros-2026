@@ -35,8 +35,11 @@ from asket_common.heading import (
 )
 
 from . import adapters, payloads
+from omniscan_bridge.core.mounting import mounting_state_from_keyvalues
+
 from .commands import (
     CMD_CUT_PROPULSION,
+    CMD_APPLY_SETUP,
     CMD_RUN_SYSTEM_TEST,
     CMD_SET_MODE,
     CMD_SET_PING_PARAMETERS,
@@ -394,7 +397,37 @@ class RosSource:
             "sonar": sonar.payload if sonar else {},
             "mission": {"state": "IDLE"},
             "link_sample": self._link,
+            # What the sonar bridge says it is placing soundings by. The
+            # command confirmation for `apply_setup` resolves against this, so
+            # it belongs here and not only in the pre-flight's state — the
+            # predicate reads this dict.
+            "mounting": self._mounting_state() or {},
         }
+
+    def _mounting_state(self) -> dict | None:
+        """The sonar bridge's own report of the geometry it is using.
+
+        Off ``/diagnostics``, and parsed by the module that writes it rather
+        than here. A second hand-written parser would be a reload that confirms
+        for the pre-flight and not for the setup page, or the reverse, and the
+        symptom would point at the reload.
+
+        ``None`` when nothing is reporting it — which the hub treats as "cannot
+        be confirmed" rather than as a mismatch. A vessel that is not saying is
+        not a vessel that disagreed.
+        """
+        msg = self._msg("diagnostics")
+        if msg is None:
+            return None
+        for status in getattr(msg, "status", []):
+            name = getattr(status, "name", "") or ""
+            if "omniscan" not in name:
+                continue
+            kv = {v.key: v.value for v in getattr(status, "values", [])}
+            state = mounting_state_from_keyvalues(kv)
+            if state is not None:
+                return state
+        return None
 
     def alarm_state(self) -> dict:
         state = self.state()
@@ -491,6 +524,16 @@ class RosSource:
                     setattr(req, "consent_token", ""),
                 ),
             )
+
+        if name == CMD_APPLY_SETUP:
+            # `std_srvs/Trigger` takes no fields, so there is nothing to fill.
+            # The setup file on disk is the message; this only says "read it".
+            #
+            # The outcome here is the service having been *called*, which is
+            # not the change having taken effect. The hub does not treat it as
+            # one: the command stays pending until the bridge reports the
+            # geometry digest the page is waiting for.
+            return self._call_service("apply_setup", lambda req: None)
 
         return CommandOutcome(False, f"command {name!r} is not wired up")
 

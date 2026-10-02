@@ -50,6 +50,7 @@ from .commands import (
     CMD_DELETE_MISSION,
     CMD_EXPORT_MISSION,
     CMD_INJECT_FAULT,
+    CMD_APPLY_SETUP,
     CMD_RUN_SYSTEM_TEST,
     CMD_SET_MODE,
     CMD_SET_PING_PARAMETERS,
@@ -153,9 +154,13 @@ class SimSource:
         # is the point of sim mode, and the mounting check is the one item on it
         # that a simulated vessel can answer truthfully — the file either says
         # somebody measured the boat or it does not.
-        self._mounting, self._mounting_provenance = load_mounting(
+        # Kept, so a reload reads the same file the first load did. Two
+        # resolutions of this path would be a simulated reload that confirmed
+        # against a different file from the one the page wrote.
+        self._mounting_path = (
             mounting_path if mounting_path is not None else _default_mounting_path()
         )
+        self._mounting, self._mounting_provenance = load_mounting(self._mounting_path)
 
     # -- clock ------------------------------------------------------------
 
@@ -644,6 +649,14 @@ class SimSource:
             "disk_free_bytes": snap.disk_free_bytes,
             "disk_total_bytes": snap.disk_total_bytes,
             "active_faults": snap.active_faults,
+            # The sonar bridge's own account of the geometry it is running on.
+            #
+            # This is the state `mounting_reloaded` resolves against, so it has
+            # to be in *this* dict and not only in the pre-flight's. It was
+            # only in the pre-flight's, which meant the confirmation predicate
+            # could never have fired on a real reload — the predicate existed,
+            # was tested in isolation, and had nothing to read.
+            "mounting": self._mounting_provenance.to_dict(),
         }
 
     def alarm_state(self) -> dict:
@@ -757,6 +770,26 @@ class SimSource:
         if name == CMD_RUN_SYSTEM_TEST:
             report = self.run_preflight(only=args.get("only") or None)
             return CommandOutcome(True, report.summary)
+
+        if name == CMD_APPLY_SETUP:
+            # The same `load_mounting` the bridge calls, against the same two
+            # files. Sim mode exists so the pre-flight and now the setup round
+            # trip can be rehearsed without a boat, and a simulated reload that
+            # merely said "yes" would rehearse nothing — the digest the hub is
+            # waiting for has to come out of the real merge or the confirmation
+            # proves only that this branch exists.
+            self._mounting, self._mounting_provenance = load_mounting(self._mounting_path)
+            prov = self._mounting_provenance
+            if prov.overlay.error:
+                return CommandOutcome(
+                    False,
+                    f"The setup file could not be used ({prov.overlay.error}). "
+                    "Nothing has been applied.",
+                )
+            return CommandOutcome(
+                True,
+                f"Sonar bridge re-read its configuration. [{prov.fingerprint}]",
+            )
 
         if name == CMD_INJECT_FAULT:
             try:

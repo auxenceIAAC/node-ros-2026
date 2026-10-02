@@ -701,6 +701,23 @@ def _mounting(state: dict, t: Thresholds) -> CheckResult:
                         "mounting configuration not reported")
 
     path = m.get("path") or "mounting.yaml"
+    overlay = m.get("overlay") or {}
+
+    if overlay.get("error"):
+        # Checked before the base file's own error, because this is the file
+        # somebody wrote from the setup page — probably minutes ago, probably
+        # standing next to the boat. "The setup page did not take" is a
+        # different sentence from "mounting.yaml is malformed", and the first
+        # one is the one they can act on.
+        return CheckResult(
+            "sonar.mounting", "Sonar mounting geometry", FAIL,
+            f"The setup file could not be used ({overlay['error']}) — "
+            "anything set on the Setup page is being ignored",
+            f"Open the Setup page and re-enter the mounting geometry. The file "
+            f"at {overlay.get('path') or 'the setup path'} is unreadable, so "
+            "the sonar is running on whatever the package default says.",
+            setup_field=MOUNTING_FIELD,
+        )
 
     if m.get("error"):
         # The worst of the three states: somebody may well have measured the
@@ -713,12 +730,15 @@ def _mounting(state: dict, t: Thresholds) -> CheckResult:
             "and restart omniscan_bridge; do not survey until it loads.",
         )
 
-    if m.get("missing") or not m.get("found"):
+    applied = overlay.get("applied") or []
+
+    if (m.get("missing") or not m.get("found")) and not applied:
         return CheckResult(
             "sonar.mounting", "Sonar mounting geometry", WARN,
             "No mounting file — the sonar's position is a hard-coded guess",
             "Measure the tilt and the lever arm from the GNSS antenna to the "
-            f"transducer, write them into {path}, and set measured: true.",
+            "transducer and enter them on the Setup page. There is no need to "
+            f"edit {path} over SSH.",
             setup_field=MOUNTING_FIELD,
         )
 
@@ -735,18 +755,22 @@ def _mounting(state: dict, t: Thresholds) -> CheckResult:
     if not m.get("measured"):
         return CheckResult(
             "sonar.mounting", "Sonar mounting geometry", WARN,
-            f"Mounting geometry is PROVISIONAL — {path} says nobody measured it",
+            "Mounting geometry is PROVISIONAL — nobody has measured this hull",
             "Measure the tilt and the lever arm from the GNSS antenna to the "
-            "transducer, to the centimetre, then set measured: true. Until "
-            "then every sounding carries the same unknown offset.",
+            "transducer, to the centimetre, and enter them on the Setup page "
+            "as measured. Until then every sounding carries the same unknown "
+            "offset.",
             setup_field=MOUNTING_FIELD,
         )
 
     who = m.get("measured_by") or "unrecorded"
     when = m.get("measured_utc") or "date unrecorded"
+    source = (
+        f"; {len(applied)} value(s) from the Setup page" if applied else ""
+    )
     return CheckResult(
         "sonar.mounting", "Sonar mounting geometry", PASS,
-        f"Measured by {who}, {when}", "",
+        f"Measured by {who}, {when}{source}", "",
     )
 
 

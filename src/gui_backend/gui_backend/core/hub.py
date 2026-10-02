@@ -29,6 +29,7 @@ from dataclasses import dataclass
 
 from . import alarms as alarms_mod
 from .commands import (
+    CMD_APPLY_SETUP,
     CMD_CUT_PROPULSION,
     CMD_SAVE_SETUP,
     CMD_SET_MODE,
@@ -40,6 +41,7 @@ from .commands import (
     STATUS_FAILED,
     mode_confirmed,
     ping_parameters_confirmed,
+    mounting_reloaded,
     propulsion_cut_confirmed,
     recording_confirmed,
 )
@@ -390,6 +392,9 @@ class Hub:
         if name == CMD_SAVE_SETUP:
             return self._save_setup(args, now_utc, command_id)
 
+        if name == CMD_APPLY_SETUP:
+            return self._apply_setup(args, now_utc, command_id)
+
         if name == CMD_SET_PROFILE:
             profile = args.get("profile")
             self.set_profile(None if profile in (None, "auto") else profile)
@@ -553,6 +558,90 @@ class Hub:
             }
             for effect in effects
         ]
+        return result
+
+    def _apply_setup(self, args: dict, now_utc: int, command_id: str | None) -> dict:
+        """Tell the owning node to re-read the setup file, and wait for proof.
+
+        The half that `save_setup` deliberately does not do. Saving writes a
+        file; this makes the vessel use it, and it is not finished until the
+        vessel says so in its own words — the geometry digest it reports has to
+        equal the one this change should produce. Not the service call
+        returning, not the file being on disk. Safety rule 4, applied to
+        configuration.
+
+        The digest is predicted from what the node says it is running on now
+        plus the answered overlay fields, which is the same merge the node will
+        perform. When the node has not reported a geometry there is nothing to
+        predict and nothing to confirm, and this refuses rather than
+        dispatching a command whose only possible outcome is a timeout that
+        reads as the vessel having refused.
+
+        Gated like a save. Re-reading geometry part way through a survey places
+        the second half of it differently from the first, which is what the
+        recording condition exists to stop.
+
+        Every refusal below happens before anything is sent, which is why the
+        command is only created once the decision is known: a command issued
+        and then superseded would leave an entry in the history that the panel
+        would render as an outcome nobody asked for.
+        """
+        def refuse(detail: str, extra: dict | None = None) -> dict:
+            cmd = self.commands.begin(CMD_APPLY_SETUP, args, now_utc, command_id=command_id)
+            self.commands.fail(cmd, detail, now_utc)
+            result = cmd.to_dict()
+            if extra:
+                result.update(extra)
+            return result
+
+        state = self.source.state()
+
+        gate = setup_gate.evaluate(state)
+        if not gate.allowed:
+            return refuse(f"{gate.reason} {gate.remedy}".strip(), {"gate": gate.to_dict()})
+
+        try:
+            profile = setup_store.load()
+        except setup_store.SetupFileError as exc:
+            return refuse(
+                f"The setup file will not parse ({exc}), so there is nothing to "
+                "apply. Fix it and save again."
+            )
+
+        expected = setup_api.predicted_fingerprint(profile, state)
+        if not expected:
+            return refuse(
+                "The sonar bridge is not reporting its mounting geometry, so "
+                "there is no way to tell whether a reload took effect. Nothing "
+                "was sent."
+            )
+
+        if (state.get("mounting") or {}).get("fingerprint") == expected:
+            cmd = self.commands.begin(CMD_APPLY_SETUP, args, now_utc, command_id=command_id)
+            self.commands.settle(
+                cmd,
+                "The sonar bridge is already running on these numbers. Nothing "
+                "needed reloading.",
+                now_utc,
+            )
+            result = cmd.to_dict()
+            result["expected_fingerprint"] = expected
+            return result
+
+        cmd = self.commands.issue(
+            CMD_APPLY_SETUP, args, now_utc,
+            confirm=mounting_reloaded(expected), command_id=command_id,
+        )
+        outcome = self.source.send_command(CMD_APPLY_SETUP, args)
+        if not outcome.accepted:
+            self.commands.fail(cmd, outcome.detail or "rejected", now_utc)
+        elif cmd.status != STATUS_FAILED:
+            cmd.detail = (
+                outcome.detail
+                or "sent, waiting for the sonar bridge to report the new geometry"
+            )
+        result = cmd.to_dict()
+        result["expected_fingerprint"] = expected
         return result
 
     # -- the loop ---------------------------------------------------------

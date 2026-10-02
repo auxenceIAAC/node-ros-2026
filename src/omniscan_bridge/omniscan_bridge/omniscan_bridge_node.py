@@ -78,6 +78,12 @@ class OmniscanBridge(Node):
         # read the very same file this node loads. PROVISIONAL until somebody
         # measures the vessel — open question Q2.
         self.declare_parameter("mounting_path", "")
+        # The setup page's per-vessel file, laid over `mounting_path` field by
+        # field. Empty means the shared default location, which is what makes
+        # "measure it on the page, press reload, the sonar moves" work without
+        # anybody editing a launch file. Set it to a path for a test, or to
+        # `none` to read the package default alone.
+        self.declare_parameter("setup_path", "")
         self.declare_parameter("use_vessel_attitude", True)
         # Republish the unmodified stream for mission_recorder. This is what
         # ends up in sonar_raw.bin, and it must be the bytes as they arrived:
@@ -87,7 +93,8 @@ class OmniscanBridge(Node):
 
         self.frame_id = self.get_parameter("frame_id").value
         self.mounting, self.mounting_provenance = load_mounting(
-            self.get_parameter("mounting_path").value
+            self.get_parameter("mounting_path").value,
+            **self._overlay_kwargs(),
         )
         # Said once, at startup, where it goes into the log next to the reason
         # the survey later looks displaced. The pre-flight check is what keeps
@@ -454,6 +461,28 @@ class OmniscanBridge(Node):
             KeyValue(key="mounting_measured_utc", value=prov.measured_utc),
             KeyValue(key="mounting_error", value=prov.error),
             KeyValue(key="mounting_unknown_fields", value=",".join(prov.unknown_fields)),
+            # The digest of the geometry in use, and the geometry itself.
+            #
+            # The setup page predicts this digest from the numbers it sent and
+            # waits for the node to report that exact one, which is the only
+            # thing that distinguishes "the file was written" from "the sonar
+            # is placing soundings by it". Without it on the wire the
+            # confirmation has nothing to read and a reload can never be
+            # anything but assumed.
+            KeyValue(key="mounting_fingerprint", value=prov.fingerprint),
+            KeyValue(
+                key="mounting_geometry",
+                value=",".join(f"{k}={v}" for k, v in sorted(prov.geometry.items())),
+            ),
+            # The setup overlay's own account, kept apart from the base file's.
+            # "The setup page did not take" and "mounting.yaml is malformed"
+            # send somebody to two different places.
+            KeyValue(key="mounting_overlay_path", value=prov.overlay.path),
+            KeyValue(key="mounting_overlay_error", value=prov.overlay.error),
+            KeyValue(key="mounting_overlay_missing", value=str(prov.overlay.missing)),
+            KeyValue(
+                key="mounting_overlay_applied", value=",".join(prov.overlay.applied)
+            ),
         ]
         arr.status.append(st)
         return arr
@@ -494,6 +523,28 @@ class OmniscanBridge(Node):
         response.message = "pinging" if ok else "failed to send to the sonar"
         return response
 
+    def _overlay_kwargs(self) -> dict:
+        """How `load_mounting` should treat the setup overlay.
+
+        One place, used by both the startup load and the reload service. Two
+        copies of this would be a node that read the overlay at boot and not on
+        reload, or the reverse — and the symptom either way is a setup page
+        that says a change took effect when it did not, which is the one thing
+        the fingerprint exists to make impossible.
+        """
+        configured = str(self.get_parameter("setup_path").value or "")
+        if configured.lower() == "none":
+            # The package default alone, for a bench run where somebody wants
+            # to know what `mounting.yaml` says on its own.
+            return {"use_overlay": False}
+        if configured:
+            return {"setup_path": configured}
+        # The shared default location. This is the case that makes "measure it
+        # on the page, press reload, the sonar moves" work with no launch file
+        # edited, and it is why the parameter's default is empty rather than a
+        # path somebody has to remember to set.
+        return {}
+
     def _on_reload_mounting(self, request, response):
         """Re-read the mounting file and report what is now in use.
 
@@ -504,7 +555,7 @@ class OmniscanBridge(Node):
         """
         path = self.get_parameter("mounting_path").value
         try:
-            mounting, provenance = load_mounting(path)
+            mounting, provenance = load_mounting(path, **self._overlay_kwargs())
         except Exception as exc:  # noqa: BLE001 - a bad file must not kill the node
             response.success = False
             response.message = (
@@ -526,6 +577,23 @@ class OmniscanBridge(Node):
             self.get_logger().error(f"mounting reload rejected: {provenance.error}")
             return response
 
+        if provenance.overlay.error:
+            # Worse than the base file being broken, because this file is the
+            # one somebody just wrote from the setup page. Reported as a
+            # failure rather than as a reload that quietly used the package
+            # default: the numbers they measured are not the numbers in use,
+            # and a success here would say they were.
+            response.success = False
+            response.message = (
+                f"The setup file {provenance.overlay.path} could not be used "
+                f"({provenance.overlay.error}). Still using the previous "
+                "geometry — what was set on the setup page has NOT been applied."
+            )
+            self.get_logger().error(
+                f"setup overlay rejected: {provenance.overlay.error}"
+            )
+            return response
+
         self.mounting, self.mounting_provenance = mounting, provenance
 
         # The fingerprint goes back in the response as well as into the
@@ -542,9 +610,15 @@ class OmniscanBridge(Node):
             self.get_logger().warning("mounting reloaded, still PROVISIONAL")
         else:
             response.success = True
+            applied = provenance.overlay.applied
+            source = (
+                f" {len(applied)} value(s) from the setup page: "
+                f"{', '.join(applied)}."
+                if applied else ""
+            )
             response.message = (
                 f"Reloaded. Measured by {provenance.measured_by or 'unrecorded'}, "
-                f"{provenance.measured_utc or 'date unrecorded'}. "
+                f"{provenance.measured_utc or 'date unrecorded'}.{source} "
                 f"[{provenance.fingerprint}]"
             )
             self.get_logger().info(f"mounting reloaded from {provenance.path}")

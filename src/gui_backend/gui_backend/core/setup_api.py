@@ -38,6 +38,13 @@ can open the page.
 
 from __future__ import annotations
 
+from omniscan_bridge.core.geometry import SonarMounting
+from omniscan_bridge.core.mounting import (
+    SETUP_FIELD_FOR_GEOMETRY,
+    SETUP_FIELD_FOR_SIDE,
+    geometry_fingerprint,
+)
+
 from asket_common.setup_profile import (
     ANSWERED,
     DEPLOYMENT_STALE_AFTER_MS,
@@ -234,3 +241,52 @@ def apply_edits(
         changed.append(field_id)
 
     return out, tuple(changed)
+
+
+def predicted_fingerprint(profile: SetupProfile, state: dict) -> str:
+    """The geometry digest the vessel should report once it re-reads the file.
+
+    The page must not say "applied" until the node reports the numbers it was
+    sent, and to wait for a digest it has to know which digest. That cannot be
+    computed from the setup file alone: the file is an *overlay*, so what the
+    sonar ends up on is the package default with the answered fields laid over
+    it, and only the node knows the default.
+
+    So it is computed from what the node says it is using now, with the
+    answered overlay fields applied on top — which is exactly the merge the
+    node will perform. The geometry comes from the node's own report rather
+    than from any file this process can see, so the two cannot be looking at
+    different copies of `mounting.yaml`.
+
+    Returns "" when the node has not reported a geometry. The caller must treat
+    that as "cannot be confirmed" rather than as a mismatch, because a vessel
+    that is not reporting is not a vessel that disagreed.
+
+    One case it gets wrong, deliberately unhandled: a field *cleared* on the
+    page reverts to the package default on the node, and this would predict
+    the value still in use. The page has no clear control, and inventing a
+    prediction for a path nobody can reach would be worse than the gap.
+    """
+    reported = ((state.get("mounting") or {}).get("geometry")) or {}
+    if not reported:
+        return ""
+
+    merged = dict(reported)
+    for name, field_id in SETUP_FIELD_FOR_GEOMETRY.items():
+        entry = profile.entry(field_id)
+        if entry.provenance in ANSWERED:
+            try:
+                merged[name] = float(entry.value)
+            except (TypeError, ValueError):
+                return ""
+    side_entry = profile.entry(SETUP_FIELD_FOR_SIDE)
+    if side_entry.provenance in ANSWERED and side_entry.value in ("port", "starboard"):
+        merged["side"] = str(side_entry.value)
+
+    try:
+        return geometry_fingerprint(SonarMounting(**merged))
+    except TypeError:
+        # The node reported a geometry this version does not understand — a
+        # field added or renamed on one side only. Unconfirmable is the honest
+        # answer; guessing would confirm a change that may not have happened.
+        return ""

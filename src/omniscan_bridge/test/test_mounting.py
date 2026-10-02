@@ -109,13 +109,26 @@ def test_a_partial_file_keeps_defaults_for_what_it_does_not_say(tmp_path):
 
 
 def test_provenance_survives_the_round_trip_to_a_dict(tmp_path):
-    """It travels to the pre-flight check as diagnostic key/values, so it has to
-    be flat and JSON-able."""
-    _, prov = load_mounting(write(tmp_path, MEASURED))
+    """It travels to the pre-flight check and to the setup page, so it has to
+    be JSON-able.
+
+    No longer flat: `overlay` and `geometry` are nested, because the setup
+    file's own problems have to stay distinguishable from `mounting.yaml`'s —
+    one `error` string covering both would read as "config broken" and get
+    ignored.
+    """
+    _, prov = load_mounting(write(tmp_path, MEASURED), use_overlay=False)
     d = prov.to_dict()
     assert d["measured"] is True
     assert d["unknown_fields"] == []
     assert set(d) == {
         "measured", "measured_by", "measured_utc", "notes",
         "path", "found", "missing", "error", "unknown_fields", "fingerprint",
+        "overlay", "geometry",
+    }
+    import json
+    json.dumps(d)
+    assert set(d["geometry"]) == {
+        "tilt_deg", "yaw_deg", "pitch_deg",
+        "lever_x_m", "lever_y_m", "lever_z_m", "side",
     }

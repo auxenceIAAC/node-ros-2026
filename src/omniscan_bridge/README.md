@@ -25,6 +25,41 @@ which is why coverage gaps are easy to leave and hard to notice.
 * `~/start_pinging`, `~/stop_pinging` — via the documented `ping_enable` flag.
   Sending a rate of zero would be a different thing, and not a supported one.
 
+## Where the mounting geometry comes from
+
+Two files, and the second wins where it has an answer.
+
+`config/mounting.yaml` is the package's own default and lives in the source
+tree. The **setup file** — written by the GUI's Setup page, at
+`asket_common.setup_profile.default_setup_path()` — is applied on top of it,
+field by field, by `core/mounting.py`.
+
+Only fields somebody has actually *answered* take effect. Every field carries a
+shipped default inside the setup profile, so taking values without checking
+provenance would mean that saving anything at all on the Setup page silently
+reverted every measurement in `mounting.yaml`. That is the one failure this
+must not have.
+
+The page never edits `mounting.yaml`. A page that wrote into six packages'
+config files would have to know the layout of every one of them, every future
+package would have to be taught about it, and a partly applied write would
+leave the vessel in a state no file describes.
+
+```bash
+# What mounting.yaml says on its own, ignoring the Setup page:
+ros2 run omniscan_bridge omniscan_bridge_node --ros-args -p setup_path:=none
+```
+
+`~/reload_mounting` re-reads both and reports the geometry digest it is now
+running on. That digest is how the Setup page tells "the file was written" from
+"the sonar is placing soundings by it" — it predicts the digest from the numbers
+it sent and waits for this node to report that exact one. Nothing else counts as
+the change having taken effect.
+
+`measured` is earned by all six geometry fields. A tilt measured on the page
+with the lever arm still on an unchecked default is not a measured geometry,
+and the pre-flight's amber warning is right to stay up.
+
 ## What it does not do
 
 **It does not georeference.** Points come out in the vessel frame. Position and

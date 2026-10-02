@@ -26,10 +26,19 @@ def test_sim_reads_the_real_mounting_file_and_warns_that_it_is_provisional():
     assert report.go
 
 
-def test_the_warning_names_the_actual_file_on_disk():
+def test_the_warning_sends_the_operator_to_the_setup_page():
+    """It used to name the file on disk, on the grounds that the operator needs
+    the path. They do not: the path is on the Jetson behind SSH, and naming it
+    produced the same amber warning on every run for two weeks with nothing
+    happening. What they need is the field, which the page can open.
+
+    `setup_field` is the structural half — the pre-flight panel renders it as a
+    link to `#setup/<id>` — and the remedy is the half a human reads.
+    """
     result = item(source().run_preflight(), "sonar.mounting")
-    assert result.message.endswith("mounting.yaml says nobody measured it")
-    assert "/" in result.message, "the operator needs the path, not just the name"
+    assert "PROVISIONAL" in result.message
+    assert result.setup_field == "vessel.sonar.mounting"
+    assert "Setup page" in result.remedy
 
 
 def test_a_measured_file_clears_the_warning(tmp_path):

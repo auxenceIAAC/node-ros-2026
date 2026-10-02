@@ -38,6 +38,7 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import BatteryState, Imu, LaserScan, NavSatFix
 
 from asket_common.mode_arbitration import ESTOP_FEEDBACK_ENABLED
+from omniscan_bridge.core.mounting import mounting_state_from_keyvalues
 from system_test.core.checks import FAIL, PASS, SKIPPED, WARN, Thresholds, run_checks
 from system_test.core.history import PreflightHistory
 
@@ -259,19 +260,14 @@ class SystemTestNode(Node):
             if "omniscan" not in name:
                 continue
             kv = {v.key: v.value for v in status.values}
-            if "mounting_path" not in kv:
+            # Parsed by the module that writes it, not here. The GUI backend
+            # needs the same values to confirm a setup reload, and two
+            # hand-written parsers would be a reload that confirms in one place
+            # and not the other.
+            state = mounting_state_from_keyvalues(kv)
+            if state is None:
                 continue
-            unknown = [f for f in kv.get("mounting_unknown_fields", "").split(",") if f]
-            return {
-                "path": kv.get("mounting_path", ""),
-                "found": kv.get("mounting_found") == "True",
-                "missing": kv.get("mounting_missing") == "True",
-                "measured": kv.get("mounting_measured") == "True",
-                "measured_by": kv.get("mounting_measured_by", ""),
-                "measured_utc": kv.get("mounting_measured_utc", ""),
-                "error": kv.get("mounting_error", ""),
-                "unknown_fields": unknown,
-            }
+            return state
         return None
 
     # -- running ----------------------------------------------------------

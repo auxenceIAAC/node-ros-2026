@@ -41,17 +41,16 @@ import os
 from pathlib import Path
 
 import yaml
-from asket_common.setup_profile import SetupProfile
+from asket_common.setup_profile import SetupProfile, default_setup_path
 
 #: Where the setup file lives when nothing says otherwise.
 #:
-#: Under ``~/.ros`` rather than in the source tree: it is per-vessel state
-#: written at runtime, not something that belongs in version control, and a
-#: ``colcon build`` must never be able to overwrite what somebody measured.
-DEFAULT_PATH = Path(
-    os.environ.get("ASKET_SETUP_FILE")
-    or Path.home() / ".ros" / "asket_setup.yaml"
-)
+#: Resolved by ``asket_common`` rather than defined here, because
+#: ``omniscan_bridge`` reads the same file as an overlay on its own config and
+#: must not import this package to find out where it is. Two definitions of
+#: this path would be a page writing to one file and a sonar bridge reading
+#: another, with every symptom pointing at the reload.
+DEFAULT_PATH = default_setup_path()
 
 _HEADER = """\
 # The mission setup for this vessel: what somebody has told it, and how.

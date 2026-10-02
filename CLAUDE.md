@@ -172,6 +172,7 @@ are compared across languages by running the JavaScript under Node.
 | 3 | Lidar, power, sonar health panels | done |
 | 4 | Recording, coverage, diagnostics, export | done |
 | 5 | Degraded link handling | done |
+| — | Mission **setup page** (two tiers, provenance, the overlay into `omniscan_bridge`, save and apply with confirmed state) | done |
 | — | Motor active test **wired to the Pico** (the gate exists and is tested; connecting it is deliberately left for when somebody is standing next to the boat), obstacle tracking, survey planner, NMEA out, RTK | not started |
 
 ## Open questions
@@ -201,10 +202,16 @@ trajectory, so `mission_recorder.merge_svlog` merges the recorded streams into a
 valid `.svlog` afterwards. Option B survives — nothing about the onboard
 recording changed.
 
-**Q2 is answered by a check rather than by a number.** The mounting geometry
-lives in `src/omniscan_bridge/config/mounting.yaml`, whose one significant line
-is `measured:`. Until a human sets it true, the pre-flight returns an amber
-WARN naming the file, on every run.
+**Q2 is answered by a check rather than by a number**, and since the setup page
+it is answerable without SSH. The package default still lives in
+`src/omniscan_bridge/config/mounting.yaml`; the Setup page writes a per-vessel
+file that `omniscan_bridge` reads *on top of* it, field by field, and only
+where somebody has answered. `measured` is now earned by all six geometry
+fields rather than by one flag. Until a human measures the hull the pre-flight
+still returns amber on every run — but it names the **field on the page**, not
+the file. Naming the file is precisely what did not work: it sat amber for two
+weeks because the file is on the Jetson behind an SSH session nobody in the
+club has. See `docs/setup_page.md`.
 
 ## Before deploying
 

@@ -6,6 +6,7 @@ faulty link in thirty seconds rather than an hour.
 
 import pytest
 from system_test.core.checks import (
+    MOUNTING_FIELD,
     CHECKS,
     FAIL,
     PASS,
@@ -270,7 +271,13 @@ def test_unmeasured_mounting_geometry_warns_but_does_not_ground_the_vessel():
     result = item(report, "sonar.mounting")
     assert result.status == WARN
     assert "PROVISIONAL" in result.message
-    assert "measured: true" in result.remedy
+    # The remedy names the Setup page, not `measured: true` in a YAML file.
+    # It used to name the file, and that is precisely what did not work: the
+    # same amber warning came back on every run for two weeks because the file
+    # it named lived behind an SSH session nobody in the club has. An
+    # instruction only one person can carry out is not a remedy.
+    assert "Setup page" in result.remedy
+    assert result.setup_field == MOUNTING_FIELD
     # A warning, deliberately: an unmeasured lever arm ruins the survey, it
     # does not endanger the boat. Blocking launch on it would teach the crew to
     # ignore the verdict.
@@ -278,9 +285,26 @@ def test_unmeasured_mounting_geometry_warns_but_does_not_ground_the_vessel():
     assert "warning" in report.summary
 
 
-def test_the_warning_names_the_file_you_have_to_edit():
+def test_the_warning_points_somewhere_the_crew_can_actually_go():
+    """It named the file for months. The file is on the Jetson, behind SSH, and
+    the warning went unactioned for two weeks — so the thing it names now is the
+    field on the Setup page, which anybody with the laptop open can fill in.
+
+    The path has not been thrown away. It still appears wherever the file
+    itself is the problem — unparseable, or holding entries nobody recognises —
+    because there you do need to know which file.
+    """
     report = run_checks(dict(HEALTHY, mounting=dict(
         PROVISIONAL_MOUNTING, path="/opt/asket/config/mounting.yaml")))
+    result = item(report, "sonar.mounting")
+    assert result.setup_field == MOUNTING_FIELD
+    assert "Setup page" in result.remedy
+
+
+def test_a_broken_file_still_names_the_file():
+    report = run_checks(dict(HEALTHY, mounting=dict(
+        PROVISIONAL_MOUNTING, path="/opt/asket/config/mounting.yaml",
+        error="not valid YAML: line 12")))
     assert "/opt/asket/config/mounting.yaml" in item(report, "sonar.mounting").message
 
 

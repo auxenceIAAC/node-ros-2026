@@ -64,8 +64,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
+
+# -- where the file lives --------------------------------------------------
+
+#: Where the setup file lives when nothing says otherwise.
+#:
+#: Here rather than in ``gui_backend`` because two halves of the workspace
+#: need it and neither may depend on the other. ``gui_backend`` writes it;
+#: ``omniscan_bridge`` reads it as an overlay on its own config, and a sonar
+#: bridge that imported the web backend to find out where a file is would be
+#: the wrong dependency in the wrong direction.
+#:
+#: Under ``~/.ros`` rather than in the source tree: it is per-vessel state
+#: written at runtime, not something that belongs in version control, and a
+#: ``colcon build`` must never be able to overwrite what somebody measured.
+#:
+#: Resolved on each call rather than at import, so a test or a launch file can
+#: set ``ASKET_SETUP_FILE`` and have it take effect — a module-level constant
+#: would be fixed by whichever module happened to be imported first.
+
+
+def default_setup_path() -> Path:
+    override = os.environ.get("ASKET_SETUP_FILE")
+    if override:
+        return Path(override)
+    return Path.home() / ".ros" / "asket_setup.yaml"
+
 
 # -- tiers -----------------------------------------------------------------
 
@@ -455,6 +483,8 @@ class FieldValue:
 
     @classmethod
     def from_dict(cls, raw: dict) -> FieldValue:
+        if not isinstance(raw, dict):
+            return cls()
         provenance = raw.get("provenance", DEFAULT)
         if provenance not in PROVENANCES:
             # An unrecognised provenance is treated as no answer at all. The
@@ -752,7 +782,15 @@ class SetupProfile:
 
     @classmethod
     def from_dict(cls, raw: dict) -> SetupProfile:
-        fields = raw.get("fields") or {}
+        # This is the boundary parser for a file a human may hand-edit, so it
+        # takes whatever is on disk and must not raise. `fields: 3` is not a
+        # hypothetical: it is what a stray character at the start of the block
+        # produces, and the caller is a sonar bridge that has to stay up.
+        if not isinstance(raw, dict):
+            return cls()
+        fields = raw.get("fields")
+        if not isinstance(fields, dict):
+            fields = {}
         values: dict[str, FieldValue] = {}
         unknown: list[str] = []
         for field_id, entry in fields.items():
